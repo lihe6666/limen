@@ -1,0 +1,8 @@
+# Rust 构建产物
+/target
+
+# 运行时日志
+*.log
+
+# 本地实际配置(如含私有源站/端点,可改用 config.example.toml 提交模板)
+# config.toml
