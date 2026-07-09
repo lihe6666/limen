@@ -38,7 +38,7 @@ pub struct WafEvent {
     pub threat: Option<String>,
     /// 转发后的源站状态码(放行/可疑时有)
     pub status: Option<u16>,
-    /// 命中原因 / 裁决来源(如 "rules" / "llm:anthropic")
+    /// 命中原因 / 裁决来源(如 "rules" / "llm:openai_compat")
     pub detail: String,
 }
 

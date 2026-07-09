@@ -1,6 +1,5 @@
 //! LLM provider 抽象:统一 trait 与公共裁决类型,让编排层与具体厂商解耦。
-//! 各 provider(anthropic / openai_compat / gemini)实现 `LlmProvider`,
-//! 自己处理鉴权、请求体格式与结构化输出机制,统一产出 `LlmVerdict`。
+//! 内置仅提供配置驱动的 OpenAI 兼容 provider,外部可通过实现 `LlmProvider` 接入任意端点。
 
 use serde::Deserialize;
 
@@ -26,11 +25,14 @@ impl LlmVerdict {
 }
 
 /// provider 无关的统一接口。编排层只持有 `Arc<dyn LlmProvider>`。
+///
+/// 扩展点:内置仅提供配置驱动的 OpenAI 兼容 provider。
+/// 要接入异形端点(非 OpenAI 兼容的请求/响应格式),在外部实现本 trait 并在 from_config 注册即可,无需改动编排层。
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
     /// 对可疑请求做二级研判。
     async fn adjudicate(&self, summary: &RequestSummary) -> anyhow::Result<LlmVerdict>;
-    /// provider 名称(用于事件详情 / 日志,如 "anthropic")
+    /// provider 名称(用于事件详情 / 日志,如 "openai_compat")
     fn name(&self) -> &str;
 }
 
@@ -67,21 +69,6 @@ pub fn build_user_content(summary: &RequestSummary) -> String {
         summary.client_ip,
         body_snippet,
     )
-}
-
-/// 期望的输出 JSON schema(供支持结构化输出的 provider 使用)。
-pub fn output_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "verdict": { "type": "string", "enum": ["allow", "block"] },
-            "threat_type": { "type": "string" },
-            "confidence": { "type": "number" },
-            "reason": { "type": "string" }
-        },
-        "required": ["verdict", "threat_type", "confidence", "reason"],
-        "additionalProperties": false
-    })
 }
 
 /// 从模型文本输出中宽松解析出 `LlmVerdict`。

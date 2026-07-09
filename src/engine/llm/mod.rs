@@ -1,8 +1,6 @@
 //! 二级 LLM 研判编排:按配置选出 provider,套上缓存 + 超时 + 降级。
 //! provider 无关 —— 换厂商只改配置,不动这里。
 
-mod anthropic;
-mod gemini;
 mod openai_compat;
 pub mod provider;
 
@@ -21,7 +19,7 @@ pub struct LlmDecision {
     pub block: bool,
     pub threat: String,
     pub reason: String,
-    /// 裁决来源,如 "llm:anthropic" / "llm:anthropic(cached)" / "llm:anthropic(fail)"
+    /// 裁决来源,如 "llm:openai_compat" / "llm:openai_compat(cached)" / "llm:openai_compat(fail)"
     pub source: String,
 }
 
@@ -39,33 +37,18 @@ impl LlmAdjudicator {
     /// 按配置构建。provider 未知或不支持时返回错误。
     pub fn from_config(cfg: &LlmConfig, client: reqwest::Client) -> anyhow::Result<Self> {
         let api_key = std::env::var(&cfg.api_key_env).unwrap_or_default();
-        if api_key.is_empty() && cfg.provider != "openai_compat" {
-            tracing::warn!(
-                env = %cfg.api_key_env,
-                "未设置 LLM API key 环境变量,研判调用可能失败(将按 fail_mode 降级)"
-            );
-        }
 
         let provider: Arc<dyn LlmProvider> = match cfg.provider.as_str() {
-            "anthropic" => Arc::new(anthropic::AnthropicProvider::new(
-                client,
-                &cfg.base_url,
-                &cfg.model,
-                api_key,
-            )),
             "openai_compat" => Arc::new(openai_compat::OpenAiCompatProvider::new(
                 client,
                 &cfg.base_url,
                 &cfg.model,
                 api_key,
             )),
-            "gemini" => Arc::new(gemini::GeminiProvider::new(
-                client,
-                &cfg.base_url,
-                &cfg.model,
-                api_key,
-            )),
-            other => anyhow::bail!("未知 LLM provider: {}(支持:anthropic|openai_compat|gemini)", other),
+            other => anyhow::bail!(
+                "未知 LLM provider: {}。内置仅 openai_compat(配置驱动,兼容 OpenAI/DeepSeek/Ollama/vLLM/Groq 等);自定义端点请实现 LlmProvider trait。",
+                other
+            ),
         };
 
         let provider_name = provider.name().to_string();

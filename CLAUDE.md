@@ -34,7 +34,7 @@ TUI 独占终端，运行时日志一律走 `tracing` 落文件（默认 `limen.
 
 - **分数契约**：`engine/rules.rs` 中每条规则带分数并累加，`engine/verdict.rs::to_verdict` 按阈值映射为裁决。默认 `block_threshold=100`（单条高置信规则即拦截）、`suspicious_threshold=40`（送 LLM）。阈值来自 `config.toml [detection]`。
 - **检测面（已知缺口）**：引擎只扫 path + query + body（截断 16KB，`proxy.rs::MAX_INSPECT_BODY`）+ User-Agent。**不扫其他请求头**（Referer/Cookie 里的 payload 会漏），这是评测暴露的主要漏报来源之一。
-- **LLM 层**（`engine/llm/`）：`mod.rs` 是编排（moka TTL 缓存 + tokio 超时 + fail_open/fail_close 降级），`provider.rs` 定义 trait，`anthropic.rs`/`openai_compat.rs`/`gemini.rs` 是实现。换厂商只改配置不动代码；新增 provider 在 `from_config` 的 match 里注册。
+- **LLM 层**（`engine/llm/`）：`mod.rs` 是编排（moka TTL 缓存 + tokio 超时 + fail_open/fail_close 降级），`provider.rs` 定义 `LlmProvider` trait（外部扩展点）。内置只有 `openai_compat.rs` 一个配置驱动的 OpenAI 兼容 provider——改 `base_url`/`model` 即可对接 OpenAI/DeepSeek/Ollama/vLLM/Groq。异形端点由外部实现 trait 并在 `from_config` 注册。注意结构化输出用 `json_object` 而非 `json_schema`（后者是 OpenAI 专属，DeepSeek 等会拒绝）；`provider.rs::parse_verdict` 是各端点的统一兜底解析层。
 - **双模式**：monitor 模式（TUI 按 `m` 切换）下检测照跑、事件照记但一律放行，用于上线前调参。
 
 ## 规则评测（改规则必跑）

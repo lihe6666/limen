@@ -32,7 +32,7 @@ pub struct LlmConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// provider 类型:anthropic | openai_compat | gemini
+    /// provider 类型,仅内置 openai_compat(配置驱动,兼容 OpenAI/DeepSeek/Ollama/vLLM/Groq 等)
     #[serde(default = "default_provider")]
     pub provider: String,
 
@@ -40,7 +40,7 @@ pub struct LlmConfig {
     #[serde(default = "default_model")]
     pub model: String,
 
-    /// openai_compat / gemini 自定义端点用;本地 Ollama 填 "http://localhost:11434/v1"
+    /// 自定义端点用;本地 Ollama 填 "http://localhost:11434/v1"
     #[serde(default)]
     pub base_url: String,
 
@@ -128,13 +128,13 @@ fn default_log_file() -> String {
     "limen.log".to_string()
 }
 fn default_provider() -> String {
-    "anthropic".to_string()
+    "openai_compat".to_string()
 }
 fn default_model() -> String {
-    "claude-haiku-4-5".to_string()
+    "gpt-4o-mini".to_string()
 }
 fn default_api_key_env() -> String {
-    "ANTHROPIC_API_KEY".to_string()
+    "OPENAI_API_KEY".to_string()
 }
 fn default_llm_timeout_ms() -> u64 {
     2000
