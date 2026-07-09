@@ -67,6 +67,14 @@ pub struct DetectionConfig {
     /// 达到该分数但未到 block 阈值 → 视为可疑,送 LLM 研判
     #[serde(default = "default_suspicious_threshold")]
     pub suspicious_threshold: u32,
+
+    /// ngram 模型文件路径,None 表示不启用第二层分类器
+    #[serde(default)]
+    pub ngram_model: Option<String>,
+
+    /// ngram 分类器得分阈值:规则判 Allow 但 score >= 此值 → 提升为 Suspicious
+    #[serde(default = "default_ngram_threshold")]
+    pub ngram_threshold: f32,
 }
 
 impl Default for LlmConfig {
@@ -88,6 +96,8 @@ impl Default for DetectionConfig {
         Self {
             block_threshold: default_block_threshold(),
             suspicious_threshold: default_suspicious_threshold(),
+            ngram_model: None,
+            ngram_threshold: default_ngram_threshold(),
         }
     }
 }
@@ -147,4 +157,7 @@ fn default_block_threshold() -> u32 {
 }
 fn default_suspicious_threshold() -> u32 {
     40
+}
+fn default_ngram_threshold() -> f32 {
+    0.9
 }

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use config::Config;
-use engine::{LlmAdjudicator, RuleEngine};
+use engine::{LlmAdjudicator, NgramClassifier, RuleEngine};
 use proxy::ProxyState;
 use state::Controls;
 use tokio::sync::mpsc;
@@ -61,6 +61,21 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // ngram 分类器(可选)。加载失败降级为不启用。
+    let ngram = match &cfg.detection.ngram_model {
+        Some(path) => match NgramClassifier::load(path) {
+            Ok(c) => {
+                tracing::info!(path = %path, "ngram 分类器已加载");
+                Some(c)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, path = %path, "ngram 分类器加载失败,降级为不启用");
+                None
+            }
+        },
+        None => None,
+    };
+
     let controls = Arc::new(Controls::new(AUTO_BAN_THRESHOLD));
 
     let state = Arc::new(ProxyState {
@@ -70,6 +85,8 @@ async fn main() -> anyhow::Result<()> {
         block_threshold: cfg.detection.block_threshold,
         suspicious_threshold: cfg.detection.suspicious_threshold,
         llm,
+        ngram,
+        ngram_threshold: cfg.detection.ngram_threshold,
         controls: controls.clone(),
         tx,
     });

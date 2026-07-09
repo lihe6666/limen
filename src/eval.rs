@@ -11,7 +11,7 @@ use anyhow::Context;
 use crate::config::Config;
 
 use crate::engine::verdict::Verdict;
-use crate::engine::{LlmAdjudicator, RequestSummary, RuleEngine};
+use crate::engine::{LlmAdjudicator, NgramClassifier, RequestSummary, RuleEngine};
 use crate::proxy::MAX_INSPECT_BODY;
 
 const DEFAULT_SAMPLE_DIR: &str = "testdata/blazehttp";
@@ -44,6 +44,20 @@ pub async fn run(args: Vec<String>) -> anyhow::Result<()> {
         cfg.detection.suspicious_threshold,
     );
 
+    // ngram 分类器(可选):加载失败降级为不启用
+    let ngram = cfg
+        .detection
+        .ngram_model
+        .as_ref()
+        .and_then(|path| match NgramClassifier::load(path) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("警告: ngram 模型加载失败({path}): {e},跳过第二层");
+                None
+            }
+        });
+    let ngram_threshold = cfg.detection.ngram_threshold;
+
     let mut files = Vec::new();
     collect_samples(root, &mut files)?;
     anyhow::ensure!(!files.is_empty(), "{} 下没有 *.black / *.white 样本", dir);
@@ -73,9 +87,40 @@ pub async fn run(args: Vec<String>) -> anyhow::Result<()> {
         inspect_time += t.elapsed();
 
         let verdict = det.to_verdict(block_th, susp_th);
+
+        // ngram 第二层提升:规则判 Allow 但 ngram 得分高 → 视为命中
+        let elevated = if matches!(verdict, Verdict::Allow) {
+            if let Some(ref ngram_cls) = ngram {
+                let score = ngram_cls.score_parts(
+                    &summary.method, &summary.path, &summary.query, &summary.body,
+                );
+                score >= ngram_threshold
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // 规则六格统计保持原口径(不受 ngram 提升影响)
         stats.count(is_black, &verdict);
 
+        if elevated {
+            if is_black {
+                stats.ngram_elevated_black += 1;
+            } else {
+                stats.ngram_elevated_white += 1;
+            }
+        }
+
         if matches!(verdict, Verdict::Suspicious { .. }) {
+            susp_samples.push(SuspEntry {
+                path: path.clone(),
+                is_black,
+                summary: summary.clone(),
+            });
+        }
+        if elevated {
             susp_samples.push(SuspEntry {
                 path: path.clone(),
                 is_black,
@@ -112,6 +157,7 @@ pub async fn run(args: Vec<String>) -> anyhow::Result<()> {
         &white_hit_rules,
         &black_threats,
         inspect_time,
+        ngram.is_some(),
     );
 
     if llm_mode {
@@ -129,7 +175,7 @@ struct SuspEntry {
     summary: RequestSummary,
 }
 
-/// 六格计数:黑/白 × Block/Suspicious/Allow。
+/// 六格计数:黑/白 × Block/Suspicious/Allow,外加 ngram 提升计数。
 #[derive(Default)]
 struct Stats {
     black_block: u32,
@@ -138,6 +184,8 @@ struct Stats {
     white_block: u32,
     white_susp: u32,
     white_allow: u32,
+    ngram_elevated_black: u32,
+    ngram_elevated_white: u32,
     parse_failed: u32,
 }
 
@@ -299,11 +347,19 @@ fn print_llm_report(
     llm_time: Duration,
     total: usize,
 ) {
+    // 送 LLM 的样本总数 = 四格行和(规则 Suspicious + ngram 提升,统一处理)
+    let susp_black_total = susp_black_llm_block + susp_black_llm_allow;
+    let susp_white_total = susp_white_llm_block + susp_white_llm_allow;
     println!();
-    println!("== LLM 二级研判(灰色地带)==");
+    println!("== LLM 二级研判(灰色地带:规则 Suspicious + ngram 提升)==");
     println!(
-        "灰色黑样本(规则 Suspicious): {}  灰色白样本(规则 Suspicious): {}",
-        stats.black_susp, stats.white_susp
+        "送检黑样本: {}(其中规则 {} + ngram 提升 {})  送检白样本: {}(规则 {} + ngram 提升 {})",
+        susp_black_total,
+        stats.black_susp,
+        susp_black_total.saturating_sub(stats.black_susp),
+        susp_white_total,
+        stats.white_susp,
+        susp_white_total.saturating_sub(stats.white_susp),
     );
     println!();
     println!("            LLM Block   LLM Allow");
@@ -317,16 +373,14 @@ fn print_llm_report(
     );
     println!();
 
-    let susp_black_total = stats.black_susp;
-    let susp_white_total = stats.white_susp;
     let llm_recall = pct(susp_black_llm_block, susp_black_total);
     let llm_fpr = pct(susp_white_llm_block, susp_white_total);
 
     println!(
-        "LLM 拦截灰色黑样本比例: {llm_recall:.2}% ({susp_black_llm_block}/{susp_black_total})"
+        "LLM 拦截送检黑样本比例: {llm_recall:.2}% ({susp_black_llm_block}/{susp_black_total})"
     );
     println!(
-        "LLM 误拦灰色白样本比例: {llm_fpr:.2}% ({susp_white_llm_block}/{susp_white_total})"
+        "LLM 误拦送检白样本比例: {llm_fpr:.2}% ({susp_white_llm_block}/{susp_white_total})"
     );
     println!("LLM 调用失败数: {llm_failures}");
     if total > 0 {
@@ -379,6 +433,7 @@ fn print_report(
     white_hit_rules: &HashMap<(String, String), u32>,
     black_threats: &HashMap<String, u32>,
     inspect_time: Duration,
+    ngram_configured: bool,
 ) {
     let (nb, nw) = (stats.black_total(), stats.white_total());
     println!("== Limen 规则引擎评测(BlazeHTTP)==");
@@ -411,6 +466,46 @@ fn print_report(
         nb,
         nw,
     );
+
+    // 三级漏斗
+    if ngram_configured {
+        let tier1_black = stats.black_block;
+        let tier1_white = stats.white_block;
+        let tier2_black = stats.ngram_elevated_black;
+        let tier2_white = stats.ngram_elevated_white;
+        let tier2_total = tier2_black + tier2_white;
+        let two_tier_tp = tier1_black + tier2_black;
+        let two_tier_fp = tier1_white + tier2_white;
+        let rules_susp_total = stats.black_susp + stats.white_susp;
+        let combined_susp_total = rules_susp_total + tier2_total;
+
+        println!("== 三级漏斗(规则 → ngram → LLM) ==");
+        println!(
+            "  Tier1 规则直接 Block  黑{tier1_black:>7}  白{tier1_white:>7}"
+        );
+        println!(
+            "  Tier2 ngram 从 Allow 提升  黑{tier2_black:>7}  白{tier2_white:>7}"
+        );
+        println!(
+            "  二级合计送检(Suspicious): 规则{rules_susp_total} + ngram提升{tier2_total} = {combined_susp_total} 条(黑{} 白{})",
+            stats.black_susp + tier2_black,
+            stats.white_susp + tier2_white,
+        );
+        println!("  其中 Tier3 LLM: 见 --llm 四格报告");
+        println!();
+
+        print_metrics(
+            "规则+ngram 两级口径",
+            two_tier_tp,
+            two_tier_fp,
+            nb,
+            nw,
+        );
+    } else {
+        println!("== 三级漏斗(规则 → ngram → LLM) ==");
+        println!("  (未配置 ngram_model,跳过第二层)");
+        println!();
+    }
 
     // 白样本误报驱动 Top 15
     let mut drivers: Vec<_> = white_hit_rules.iter().collect();

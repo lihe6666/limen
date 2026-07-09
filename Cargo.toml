@@ -22,5 +22,6 @@ crossterm = "0.28"
 regex = "1"
 aho-corasick = "1"
 # 阶段4:多 provider LLM 研判
+crc32fast = "1"
 async-trait = "0.1"
 moka = { version = "0.12", features = ["future"] }

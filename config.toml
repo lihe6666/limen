@@ -6,6 +6,8 @@ log_file = "limen.log"
 [detection]
 block_threshold = 100       # 规则分数达此值直接拦截
 suspicious_threshold = 40   # 达此值但未到 block → 送 LLM 研判
+ngram_model = "ml/model.bin" # 二级 char n-gram 分类器模型;留空/删除则不启用第二层
+ngram_threshold = 0.9        # 分类器得分达此值 → 把规则判 Allow 的请求提升为 Suspicious 送 LLM
 
 [llm]
 enabled = true

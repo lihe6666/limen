@@ -13,7 +13,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::engine::{LlmAdjudicator, RequestSummary, RuleEngine, Verdict};
+use crate::engine::{LlmAdjudicator, NgramClassifier, RequestSummary, RuleEngine, Verdict};
 use crate::event::{now_hms, Action, WafEvent};
 use crate::state::Controls;
 
@@ -27,6 +27,8 @@ pub struct ProxyState {
     pub block_threshold: u32,
     pub suspicious_threshold: u32,
     pub llm: Option<Arc<LlmAdjudicator>>,
+    pub ngram: Option<NgramClassifier>,
+    pub ngram_threshold: f32,
     pub controls: Arc<Controls>,
     pub tx: mpsc::Sender<WafEvent>,
 }
@@ -114,7 +116,20 @@ async fn pipeline(
 
     // 1) 一级规则引擎
     let detection = state.engine.inspect(&summary);
-    let verdict = detection.to_verdict(state.block_threshold, state.suspicious_threshold);
+    let mut verdict = detection.to_verdict(state.block_threshold, state.suspicious_threshold);
+
+    // 1.5) ngram 分类器二层提升:规则判 Allow 但 ngram 得分高 → 提升为 Suspicious
+    if matches!(verdict, Verdict::Allow) {
+        if let Some(ref ngram) = state.ngram {
+            let score = ngram.score_parts(&summary.method, &summary.path, &summary.query, &summary.body);
+            if score >= state.ngram_threshold {
+                verdict = Verdict::Suspicious {
+                    score: state.suspicious_threshold,
+                    reasons: vec![format!("ngram classifier: {:.3}", score)],
+                };
+            }
+        }
+    }
 
     match verdict {
         Verdict::Block { score, threat, reasons } => {
