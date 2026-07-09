@@ -49,18 +49,21 @@ confidence is a number from 0 to 1; reason is one concise sentence.";
 pub fn build_user_content(summary: &RequestSummary) -> String {
     // body 已在代理层截断;此处再兜底截断,控制 token。
     let body_snippet: String = summary.body.chars().take(1000).collect();
+    let headers_snippet: String = summary.headers.chars().take(800).collect();
     format!(
         "HTTP request to evaluate:\n\
          method: {}\n\
          path: {}\n\
          query: {}\n\
          user_agent: {}\n\
+         headers (may be truncated): {}\n\
          client_ip: {}\n\
          body (may be truncated): {}",
         summary.method,
         summary.path,
         summary.query,
         summary.user_agent,
+        headers_snippet,
         summary.client_ip,
         body_snippet,
     )

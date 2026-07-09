@@ -132,5 +132,6 @@ impl LlmAdjudicator {
 /// 缓存键:请求关键特征拼接。相同攻击特征在 TTL 内只研判一次。
 fn cache_key(s: &RequestSummary) -> String {
     let body: String = s.body.chars().take(512).collect();
-    format!("{}|{}|{}|{}|{}", s.method, s.path, s.query, s.user_agent, body)
+    let headers: String = s.headers.chars().take(512).collect();
+    format!("{}|{}|{}|{}|{}|{}", s.method, s.path, s.query, s.user_agent, headers, body)
 }

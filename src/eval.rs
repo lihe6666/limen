@@ -7,16 +7,29 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use crate::config::Config;
+
 use crate::engine::verdict::Verdict;
-use crate::engine::{RequestSummary, RuleEngine};
+use crate::engine::{LlmAdjudicator, RequestSummary, RuleEngine};
 use crate::proxy::MAX_INSPECT_BODY;
 
 const DEFAULT_SAMPLE_DIR: &str = "testdata/blazehttp";
 const REPORT_DIR: &str = "target/eval";
 
-pub fn run(dir: Option<String>) -> anyhow::Result<()> {
-    let dir = dir.unwrap_or_else(|| DEFAULT_SAMPLE_DIR.to_string());
+pub async fn run(args: Vec<String>) -> anyhow::Result<()> {
+    let (llm_mode, dir) = {
+        let mut llm = false;
+        let mut d = DEFAULT_SAMPLE_DIR.to_string();
+        for a in &args {
+            if a == "--llm" {
+                llm = true;
+            } else if !a.starts_with('-') {
+                d = a.clone();
+            }
+        }
+        (llm, d)
+    };
     let root = Path::new(&dir);
     anyhow::ensure!(
         root.is_dir(),
@@ -44,6 +57,7 @@ pub fn run(dir: Option<String>) -> anyhow::Result<()> {
     let mut black_threats: HashMap<String, u32> = HashMap::new();
     let mut missed_black: Vec<(PathBuf, u32)> = Vec::new();
     let mut fp_white: Vec<(PathBuf, u32, String)> = Vec::new();
+    let mut susp_samples: Vec<SuspEntry> = Vec::new();
     let mut inspect_time = Duration::ZERO;
 
     for path in &files {
@@ -60,6 +74,14 @@ pub fn run(dir: Option<String>) -> anyhow::Result<()> {
 
         let verdict = det.to_verdict(block_th, susp_th);
         stats.count(is_black, &verdict);
+
+        if matches!(verdict, Verdict::Suspicious { .. }) {
+            susp_samples.push(SuspEntry {
+                path: path.clone(),
+                is_black,
+                summary: summary.clone(),
+            });
+        }
 
         if is_black {
             match verdict {
@@ -91,7 +113,20 @@ pub fn run(dir: Option<String>) -> anyhow::Result<()> {
         &black_threats,
         inspect_time,
     );
+
+    if llm_mode {
+        run_llm_eval(&cfg, &stats, &susp_samples).await?;
+    }
+
     Ok(())
+}
+
+/// 灰色样本条目:被规则引擎判为 Suspicious 后送 LLM 研判。
+#[allow(dead_code)]
+struct SuspEntry {
+    path: PathBuf,
+    is_black: bool,
+    summary: RequestSummary,
 }
 
 /// 六格计数:黑/白 × Block/Suspicious/Allow。
@@ -125,6 +160,53 @@ impl Stats {
     fn white_total(&self) -> u32 {
         self.white_block + self.white_susp + self.white_allow
     }
+}
+
+/// LLM 二级研判评测:对规则引擎判为 Suspicious 的灰色样本逐条调用 LLM,
+/// 统计灰色地带的消解质量(黑/白 × Block/Allow 四格)。
+async fn run_llm_eval(
+    cfg: &Config,
+    stats: &Stats,
+    susp_samples: &[SuspEntry],
+) -> anyhow::Result<()> {
+    tracing::info!("LLM 模式:构造二级研判层...");
+    let client = reqwest::Client::builder()
+        .build()
+        .context("构建 HTTP 客户端失败")?;
+    let adjudicator = LlmAdjudicator::from_config(&cfg.llm, client)
+        .context("LLM 研判初始化失败,请检查 config.toml 的 [llm] 和 API key 环境变量")?;
+
+    let mut susp_black_llm_block: u32 = 0;
+    let mut susp_black_llm_allow: u32 = 0;
+    let mut susp_white_llm_block: u32 = 0;
+    let mut susp_white_llm_allow: u32 = 0;
+    let mut llm_failures: u32 = 0;
+    let mut llm_time = Duration::ZERO;
+
+    let total = susp_samples.len();
+    for (i, entry) in susp_samples.iter().enumerate() {
+        let t = Instant::now();
+        let decision = adjudicator.adjudicate(&entry.summary).await;
+        llm_time += t.elapsed();
+
+        if decision.source.contains("(fail)") {
+            llm_failures += 1;
+        }
+
+        match (entry.is_black, decision.block) {
+            (true, true) => susp_black_llm_block += 1,
+            (true, false) => susp_black_llm_allow += 1,
+            (false, true) => susp_white_llm_block += 1,
+            (false, false) => susp_white_llm_allow += 1,
+        }
+
+        if (i + 1) % 25 == 0 {
+            tracing::info!("LLM 研判进度: {}/{}", i + 1, total);
+        }
+    }
+
+    print_llm_report(stats, susp_black_llm_block, susp_black_llm_allow, susp_white_llm_block, susp_white_llm_allow, llm_failures, llm_time, total);
+    Ok(())
 }
 
 /// 递归收集 *.black / *.white 文件。
@@ -204,6 +286,69 @@ fn find_blank_line(bytes: &[u8]) -> Option<(usize, usize)> {
         (Some(c), None) => Some((c, c + 4)),
         (None, None) => None,
     }
+}
+
+/// LLM 二级研判报告:四格统计、消解比例、失败数、耗时。
+fn print_llm_report(
+    stats: &Stats,
+    susp_black_llm_block: u32,
+    susp_black_llm_allow: u32,
+    susp_white_llm_block: u32,
+    susp_white_llm_allow: u32,
+    llm_failures: u32,
+    llm_time: Duration,
+    total: usize,
+) {
+    println!();
+    println!("== LLM 二级研判(灰色地带)==");
+    println!(
+        "灰色黑样本(规则 Suspicious): {}  灰色白样本(规则 Suspicious): {}",
+        stats.black_susp, stats.white_susp
+    );
+    println!();
+    println!("            LLM Block   LLM Allow");
+    println!(
+        "  灰色黑    {:>8}   {:>8}",
+        susp_black_llm_block, susp_black_llm_allow
+    );
+    println!(
+        "  灰色白    {:>8}   {:>8}",
+        susp_white_llm_block, susp_white_llm_allow
+    );
+    println!();
+
+    let susp_black_total = stats.black_susp;
+    let susp_white_total = stats.white_susp;
+    let llm_recall = pct(susp_black_llm_block, susp_black_total);
+    let llm_fpr = pct(susp_white_llm_block, susp_white_total);
+
+    println!(
+        "LLM 拦截灰色黑样本比例: {llm_recall:.2}% ({susp_black_llm_block}/{susp_black_total})"
+    );
+    println!(
+        "LLM 误拦灰色白样本比例: {llm_fpr:.2}% ({susp_white_llm_block}/{susp_white_total})"
+    );
+    println!("LLM 调用失败数: {llm_failures}");
+    if total > 0 {
+        let avg_ms = llm_time.as_secs_f64() * 1000.0 / total as f64;
+        println!("平均每样本 LLM 耗时: {:.1} ms", avg_ms);
+    }
+
+    let nb = stats.black_total();
+    let nw = stats.white_total();
+    let final_tp = stats.black_block + susp_black_llm_block;
+    let final_fp = stats.white_block + susp_white_llm_block;
+
+    println!();
+    println!("== 端到端(规则+LLM)==");
+    println!(
+        "最终检出率: {:.2}% ({final_tp}/{nb})",
+        pct(final_tp, nb)
+    );
+    println!(
+        "最终误报率: {:.2}% ({final_fp}/{nw})",
+        pct(final_fp, nw)
+    );
 }
 
 fn write_detail_files(

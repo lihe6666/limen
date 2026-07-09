@@ -5,7 +5,7 @@
 use serde_json::json;
 
 use super::provider::{
-    build_user_content, output_schema, parse_verdict, LlmProvider, LlmVerdict, SYSTEM_PROMPT,
+    build_user_content, parse_verdict, LlmProvider, LlmVerdict, SYSTEM_PROMPT,
 };
 use crate::engine::verdict::RequestSummary;
 
@@ -50,14 +50,10 @@ impl LlmProvider for OpenAiCompatProvider {
                 { "role": "system", "content": SYSTEM_PROMPT },
                 { "role": "user", "content": build_user_content(summary) }
             ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "waf_verdict",
-                    "strict": true,
-                    "schema": output_schema()
-                }
-            }
+            // 用 json_object 而非 json_schema:后者是 OpenAI 专属,DeepSeek 等兼容端点
+            // 会拒绝("response_format type is unavailable")。系统提示已约束严格 JSON,
+            // parse_verdict 亦有宽松兜底,足以覆盖各兼容端点。
+            "response_format": { "type": "json_object" }
         });
 
         let mut req = self.client.post(&url).json(&body);

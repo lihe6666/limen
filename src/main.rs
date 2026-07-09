@@ -25,7 +25,7 @@ const AUTO_BAN_THRESHOLD: u32 = 5;
 async fn main() -> anyhow::Result<()> {
     // `limen eval [样本目录]`:离线评测规则引擎,跑完即退出
     if std::env::args().nth(1).as_deref() == Some("eval") {
-        return eval::run(std::env::args().nth(2));
+        return eval::run(std::env::args().skip(2).collect()).await;
     }
 
     let config_path =

@@ -10,8 +10,8 @@ suspicious_threshold = 40   # 达此值但未到 block → 送 LLM 研判
 [llm]
 enabled = true
 provider = "openai_compat"                 # anthropic | openai_compat | gemini
-model = "mock-model"
-base_url = "http://127.0.0.1:9000/v1"      # 本地 mock;真实可填 Ollama/OpenAI/DeepSeek 等
-api_key_env = "OPENAI_API_KEY"             # openai_compat 下留空亦可
-timeout_ms = 2000
+model = "deepseek-chat"                    # DeepSeek 官方 API 模型名
+base_url = "https://api.deepseek.com"      # DeepSeek OpenAI 兼容端点
+api_key_env = "OPENAI_API_KEY"             # 从该环境变量读 key
+timeout_ms = 15000                         # 真实网络往返,放宽超时
 fail_mode = "fail_open"
