@@ -18,7 +18,7 @@ use crate::event::{now_hms, Action, WafEvent};
 use crate::state::Controls;
 
 const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
-const MAX_INSPECT_BODY: usize = 16 * 1024;
+pub(crate) const MAX_INSPECT_BODY: usize = 16 * 1024;
 
 pub struct ProxyState {
     pub client: reqwest::Client,
@@ -77,18 +77,25 @@ async fn pipeline(
         let end = body_bytes.len().min(MAX_INSPECT_BODY);
         String::from_utf8_lossy(&body_bytes[..end]).into_owned()
     };
-    let user_agent = parts
-        .headers
-        .get("user-agent")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let mut user_agent = String::new();
+    let mut header_lines: Vec<String> = Vec::new();
+    for (name, value) in parts.headers.iter() {
+        let name_str = name.as_str();
+        let value_str = value.to_str().unwrap_or("");
+        if name_str.eq_ignore_ascii_case("user-agent") {
+            user_agent = value_str.to_string();
+        } else {
+            header_lines.push(format!("{}: {}", name_str, value_str));
+        }
+    }
+    let headers = header_lines.join("\n");
     let summary = RequestSummary {
         method: parts.method.as_str().to_string(),
         path: parts.uri.path().to_string(),
         query: parts.uri.query().unwrap_or("").to_string(),
         user_agent,
         body: inspect_body,
+        headers,
         client_ip: client_ip.clone(),
     };
 

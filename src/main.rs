@@ -3,6 +3,7 @@
 
 mod config;
 mod engine;
+mod eval;
 mod event;
 mod proxy;
 mod state;
@@ -22,6 +23,11 @@ const AUTO_BAN_THRESHOLD: u32 = 5;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `limen eval [样本目录]`:离线评测规则引擎,跑完即退出
+    if std::env::args().nth(1).as_deref() == Some("eval") {
+        return eval::run(std::env::args().nth(2));
+    }
+
     let config_path =
         std::env::args().nth(1).unwrap_or_else(|| "config.toml".to_string());
     let cfg = Config::load(&config_path)?;

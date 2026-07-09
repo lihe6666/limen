@@ -10,6 +10,9 @@ pub struct RequestSummary {
     pub user_agent: String,
     /// UTF-8 有损解码后的请求体(可能被截断)
     pub body: String,
+    /// 除 User-Agent 外所有请求头按 'name: value' 每行一条拼接,\n 分隔
+    /// (UA 由扫描器规则单独处理)
+    pub headers: String,
     pub client_ip: String,
 }
 

