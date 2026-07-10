@@ -108,7 +108,7 @@ async fn pipeline(
         if state.controls.is_banned(&ip) {
             return block_or_monitor(
                 state, summary, parts, body_bytes, "banned-ip".into(), 0,
-                "IP 在黑名单".into(),
+                "IP 在黑名单".into(), "banned-ip",
             )
             .await;
         }
@@ -138,7 +138,7 @@ async fn pipeline(
                     tracing::warn!(%client_ip, "同一 IP 多次拦截,已自动封禁");
                 }
             }
-            block_or_monitor(state, summary, parts, body_bytes, threat, score, reasons.join("; ")).await
+            block_or_monitor(state, summary, parts, body_bytes, threat, score, reasons.join("; "), "rules").await
         }
         Verdict::Suspicious { score, reasons } => {
             if let Some(llm) = state.llm.clone() {
@@ -154,30 +154,42 @@ async fn pipeline(
                         source = %decision.source, reason = %decision.reason,
                         "LLM 研判判定拦截"
                     );
+                    tracing::info!(
+                        tier = "llm", analysis = %decision.analysis, reason = %decision.reason,
+                        path = %summary.path, "LLM 研判详情"
+                    );
+                    let detail = format!("{}: {} | trigger: {}",
+                        decision.source, decision.reason, reasons.join("; "));
                     block_or_monitor(
                         state, summary, parts, body_bytes, decision.threat, score,
-                        format!("{}: {}", decision.source, decision.reason),
+                        detail, "llm",
                     )
                     .await
                 } else {
                     let resp = forward(state.clone(), parts, body_bytes).await?;
+                    tracing::info!(
+                        tier = "llm", analysis = %decision.analysis, reason = %decision.reason,
+                        path = %summary.path, "LLM 研判详情"
+                    );
+                    let detail = format!("{}: {} | trigger: {}",
+                        decision.source, decision.reason, reasons.join("; "));
                     emit(&state, &summary, Action::Suspicious, score, None,
                         Some(resp.status().as_u16()),
-                        format!("{}: {}", decision.source, decision.reason));
+                        detail, "llm");
                     Ok(resp)
                 }
             } else {
                 let resp = forward(state.clone(), parts, body_bytes).await?;
                 emit(&state, &summary, Action::Suspicious, score, None,
                     Some(resp.status().as_u16()),
-                    format!("rules: {}", reasons.join("; ")));
+                    format!("rules: {}", reasons.join("; ")), "rules");
                 Ok(resp)
             }
         }
         Verdict::Allow => {
             let resp = forward(state.clone(), parts, body_bytes).await?;
             emit(&state, &summary, Action::Allowed, 0, None,
-                Some(resp.status().as_u16()), "rules".into());
+                Some(resp.status().as_u16()), "rules".into(), "rules");
             Ok(resp)
         }
     }
@@ -192,9 +204,10 @@ async fn block_or_monitor(
     threat: String,
     score: u32,
     detail: String,
+    tier: &str,
 ) -> anyhow::Result<Response> {
     if state.controls.enforce() {
-        emit(&state, &summary, Action::Blocked, score, Some(threat), None, detail);
+        emit(&state, &summary, Action::Blocked, score, Some(threat), None, detail, tier);
         Ok(error_response(
             StatusCode::FORBIDDEN,
             "403 Forbidden — request blocked by WAF",
@@ -206,6 +219,7 @@ async fn block_or_monitor(
             &state, &summary, Action::Suspicious, score, Some(threat),
             Some(resp.status().as_u16()),
             format!("MONITOR(本应拦截): {}", detail),
+            tier,
         );
         Ok(resp)
     }
@@ -263,6 +277,7 @@ fn emit(
     threat: Option<String>,
     status: Option<u16>,
     detail: String,
+    tier: &str,
 ) {
     let ev = WafEvent {
         time: now_hms(),
@@ -271,11 +286,24 @@ fn emit(
         path: summary.path.clone(),
         action,
         score,
-        threat,
+        threat: threat.clone(),
         status,
-        detail,
+        detail: detail.clone(),
+        tier: tier.to_string(),
     };
     let _ = state.tx.try_send(ev);
+
+    match action {
+        Action::Blocked => {
+            tracing::warn!(tier, client_ip = %summary.client_ip, method = %summary.method, path = %summary.path, score, threat = ?threat, detail = %detail, "WAF 拦截");
+        }
+        Action::Suspicious => {
+            tracing::info!(tier, client_ip = %summary.client_ip, method = %summary.method, path = %summary.path, score, threat = ?threat, detail = %detail, "WAF 送检/可疑");
+        }
+        Action::Allowed => {
+            tracing::debug!(tier, client_ip = %summary.client_ip, method = %summary.method, path = %summary.path, score, threat = ?threat, detail = %detail, "WAF 放行");
+        }
+    }
 }
 
 fn error_response(status: StatusCode, msg: &str) -> Response {

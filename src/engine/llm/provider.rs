@@ -16,6 +16,9 @@ pub struct LlmVerdict {
     pub confidence: f32,
     #[serde(default)]
     pub reason: String,
+    /// 2-3 句更详细的判断依据:命中了什么特征、为何判定(可选,旧输出以 default 兜底)
+    #[serde(default)]
+    pub analysis: String,
 }
 
 impl LlmVerdict {
@@ -45,7 +48,8 @@ Consider SQL injection, XSS, path traversal, command injection, SSRF, and reconn
 Be precise: do not block legitimate traffic that merely resembles an attack. \
 Respond ONLY with a JSON object matching the required schema: \
 verdict is \"block\" or \"allow\"; threat_type is a short label (e.g. \"SQLi\", \"XSS\", \"none\"); \
-confidence is a number from 0 to 1; reason is one concise sentence.";
+confidence is a number from 0 to 1; reason is one concise sentence; \
+analysis is 2-3 sentences giving your detailed rationale (what features were hit, why the verdict).";
 
 /// 构造发送给模型的用户消息:精简请求特征,不发全量 body。
 pub fn build_user_content(summary: &RequestSummary) -> String {

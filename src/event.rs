@@ -40,6 +40,8 @@ pub struct WafEvent {
     pub status: Option<u16>,
     /// 命中原因 / 裁决来源(如 "rules" / "llm:openai_compat")
     pub detail: String,
+    /// 检测级别:"rules" / "ngram" / "llm" / "banned-ip"
+    pub tier: String,
 }
 
 /// 取当前 UTC 时间的 HH:MM:SS(避免引入 chrono)。

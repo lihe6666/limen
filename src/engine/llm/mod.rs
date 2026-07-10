@@ -21,6 +21,8 @@ pub struct LlmDecision {
     pub reason: String,
     /// 裁决来源,如 "llm:openai_compat" / "llm:openai_compat(cached)" / "llm:openai_compat(fail)"
     pub source: String,
+    /// LLM 详细判断依据(2-3 句);缓存命中/降级时为空串
+    pub analysis: String,
 }
 
 pub struct LlmAdjudicator {
@@ -76,6 +78,7 @@ impl LlmAdjudicator {
                 threat: if block { "cached".into() } else { "none".into() },
                 reason: "cached verdict".into(),
                 source: format!("llm:{}(cached)", self.provider_name),
+                analysis: String::new(),
             };
         }
 
@@ -89,6 +92,7 @@ impl LlmAdjudicator {
                     threat: v.threat_type,
                     reason: format!("{} (置信度 {:.2})", v.reason, v.confidence),
                     source: format!("llm:{}", self.provider_name),
+                    analysis: v.analysis,
                 }
             }
             Ok(Err(e)) => {
@@ -108,6 +112,7 @@ impl LlmAdjudicator {
             threat: "unknown".into(),
             reason,
             source: format!("llm:{}(fail)", self.provider_name),
+            analysis: String::new(),
         }
     }
 }

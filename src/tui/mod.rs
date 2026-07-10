@@ -197,6 +197,7 @@ fn render_stats(f: &mut Frame, area: Rect, app: &AppState) {
 
 fn render_table(f: &mut Frame, area: Rect, app: &AppState) {
     let header = Row::new(vec![
+        Cell::from("级别"),
         Cell::from("时间"),
         Cell::from("客户端"),
         Cell::from("方法"),
@@ -223,6 +224,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &AppState) {
             .map(|t| format!("[{}] {}", t, ev.detail))
             .unwrap_or_else(|| ev.detail.clone());
         Row::new(vec![
+            Cell::from(ev.tier.clone()),
             Cell::from(ev.time.clone()),
             Cell::from(ev.client_ip.clone()),
             Cell::from(ev.method.clone()),
@@ -236,6 +238,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &AppState) {
     });
 
     let widths = [
+        Constraint::Length(8),
         Constraint::Length(8),
         Constraint::Length(16),
         Constraint::Length(6),

@@ -1,6 +1,6 @@
 //! OpenAI 兼容 provider:`POST {base_url}/chat/completions`,鉴权头 `Authorization: Bearer`。
 //! base_url 可配,一份实现覆盖 OpenAI / Ollama / vLLM / LocalAI / DeepSeek / Groq / Together 等。
-//! 用 `response_format: json_schema` 约束结构化输出;本地模型不支持时靠 parse_verdict 宽松兜底。
+//! 用 `response_format: json_object` 约束结构化输出;本地模型不支持时靠 parse_verdict 宽松兜底。
 
 use serde_json::json;
 
