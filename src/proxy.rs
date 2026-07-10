@@ -34,6 +34,10 @@ pub struct ProxyState {
     pub controls: Arc<Controls>,
     pub tx: mpsc::Sender<WafEvent>,
     pub gap_log: Option<String>,
+    /// 启动时从配置解析好的可信代理 IP 列表
+    pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// 取真实 IP 的头名,默认 "X-Forwarded-For"
+    pub real_ip_header: String,
 }
 
 pub type SharedState = Arc<ProxyState>;
@@ -61,12 +65,57 @@ async fn handle(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request,
 ) -> Response {
-    match pipeline(state, addr.ip().to_string(), req).await {
+    let headers = req.headers().clone();
+    let client_ip = real_client_ip(
+        addr.ip(),
+        &headers,
+        &state.trusted_proxies,
+        &state.real_ip_header,
+    );
+    match pipeline(state, client_ip, req).await {
         Ok(resp) => resp,
         Err(err) => {
             tracing::error!(error = %err, "处理请求失败");
             error_response(StatusCode::BAD_GATEWAY, &format!("502 Bad Gateway: {err}"))
         }
+    }
+}
+
+/// 从可信代理的转发头中提取真实客户端 IP,安全语义:
+/// - 若 trusted 为空或 peer 不在 trusted 里:直接返回 peer.to_string(),不信任任何头
+/// - 若 peer 在 trusted 里:
+///   - X-Forwarded-For(大小写不敏感):取最右侧逗号分隔项(可信边缘代理实际观测到的直连 IP,
+///     左侧项可能被客户端伪造),trim 后解析为 IpAddr,成功返回字符串,失败回退 peer
+///   - 其他头(如 X-Real-IP):整值 trim 后解析为 IpAddr,成功返回字符串,失败回退 peer
+pub(crate) fn real_client_ip(
+    peer: std::net::IpAddr,
+    headers: &axum::http::HeaderMap,
+    trusted: &[std::net::IpAddr],
+    header_name: &str,
+) -> String {
+    if trusted.is_empty() || !trusted.contains(&peer) {
+        return peer.to_string();
+    }
+    let raw = match headers.get(header_name) {
+        Some(v) => match v.to_str() {
+            Ok(s) => s,
+            Err(_) => return peer.to_string(),
+        },
+        None => return peer.to_string(),
+    };
+    if header_name.eq_ignore_ascii_case("x-forwarded-for") {
+        raw.rsplit(',')
+            .next()
+            .map(|s| s.trim())
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| peer.to_string())
+    } else {
+        raw.trim()
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| peer.to_string())
     }
 }
 
@@ -343,4 +392,39 @@ fn error_response(status: StatusCode, msg: &str) -> Response {
         .header("content-type", "text/plain; charset=utf-8")
         .body(Body::from(msg.to_string()))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn untrusted_peer_uses_peer_ip() {
+        let peer = "1.2.3.4".parse::<std::net::IpAddr>().unwrap();
+        let trusted: Vec<std::net::IpAddr> = vec![];
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "9.9.9.9".parse().unwrap());
+        let result = real_client_ip(peer, &headers, &trusted, "x-forwarded-for");
+        assert_eq!(result, "1.2.3.4");
+    }
+
+    #[test]
+    fn trusted_proxy_xff_rightmost() {
+        let peer = "127.0.0.1".parse::<std::net::IpAddr>().unwrap();
+        let trusted: Vec<std::net::IpAddr> = vec!["127.0.0.1".parse().unwrap()];
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "5.5.5.5, 6.6.6.6".parse().unwrap());
+        let result = real_client_ip(peer, &headers, &trusted, "x-forwarded-for");
+        assert_eq!(result, "6.6.6.6");
+    }
+
+    #[test]
+    fn trusted_proxy_missing_header_falls_back() {
+        let peer = "127.0.0.1".parse::<std::net::IpAddr>().unwrap();
+        let trusted: Vec<std::net::IpAddr> = vec!["127.0.0.1".parse().unwrap()];
+        let headers = HeaderMap::new();
+        let result = real_client_ip(peer, &headers, &trusted, "x-forwarded-for");
+        assert_eq!(result, "127.0.0.1");
+    }
 }

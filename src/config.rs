@@ -26,6 +26,15 @@ pub struct Config {
     #[serde(default)]
     pub llm: LlmConfig,
 
+    /// 可信前置代理 IP 列表(精确 IP 字符串,如 ["127.0.0.1", "::1"])
+    /// 空 = 不信任任何转发头,回退用对端 IP
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+
+    /// 取真实 IP 的头名,默认 "X-Forwarded-For"
+    #[serde(default = "default_real_ip_header")]
+    pub real_ip_header: String,
+
     #[serde(default)]
     pub detection: DetectionConfig,
 }
@@ -138,6 +147,8 @@ impl Default for Config {
             upstream: default_upstream(),
             log_file: default_log_file(),
             headless: false,
+            trusted_proxies: Vec::new(),
+            real_ip_header: default_real_ip_header(),
             llm: LlmConfig::default(),
             detection: DetectionConfig::default(),
         }
@@ -176,4 +187,8 @@ fn default_suspicious_threshold() -> u32 {
 }
 fn default_ngram_threshold() -> f32 {
     0.9
+}
+
+fn default_real_ip_header() -> String {
+    "X-Forwarded-For".to_string()
 }

@@ -84,6 +84,18 @@ async fn main() -> anyhow::Result<()> {
 
     let controls = Arc::new(Controls::new(AUTO_BAN_THRESHOLD));
 
+    let trusted_proxies: Vec<std::net::IpAddr> = cfg
+        .trusted_proxies
+        .iter()
+        .filter_map(|s| match s.parse::<std::net::IpAddr>() {
+            Ok(ip) => Some(ip),
+            Err(e) => {
+                tracing::warn!(%s, error = %e, "trusted_proxies 解析失败,跳过");
+                None
+            }
+        })
+        .collect();
+
     let state = Arc::new(ProxyState {
         client,
         upstream: upstream.clone(),
@@ -96,6 +108,8 @@ async fn main() -> anyhow::Result<()> {
         controls: controls.clone(),
         tx,
         gap_log: cfg.detection.gap_log.clone(),
+        trusted_proxies,
+        real_ip_header: cfg.real_ip_header.clone(),
     });
     let app = proxy::router(state);
 
