@@ -18,6 +18,11 @@ pub struct Config {
     #[serde(default = "default_log_file")]
     pub log_file: String,
 
+    /// 无界面守护进程模式:只跑反向代理、不起 TUI。
+    /// 服务器/容器等无 TTY 环境必须开启;未显式配置时,检测到 stdout 非终端会自动降级为 headless。
+    #[serde(default)]
+    pub headless: bool,
+
     #[serde(default)]
     pub llm: LlmConfig,
 
@@ -132,6 +137,7 @@ impl Default for Config {
             listen: default_listen(),
             upstream: default_upstream(),
             log_file: default_log_file(),
+            headless: false,
             llm: LlmConfig::default(),
             detection: DetectionConfig::default(),
         }

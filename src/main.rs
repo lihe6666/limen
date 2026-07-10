@@ -10,6 +10,7 @@ mod proxy;
 mod state;
 mod tui;
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -103,26 +104,47 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("无法监听 {}", cfg.listen))?;
     tracing::info!("WAF 已就绪,监听 {}", cfg.listen);
 
-    // 代理服务在后台 tokio 任务里跑
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await
-        {
-            tracing::error!(error = %e, "HTTP 服务退出");
+    let serve = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    );
+
+    // 无 TTY(服务器/容器)时 TUI 无法运行;显式配置或自动检测到非终端 → headless。
+    // 否则代理会随 TUI 线程一起退出,无法作为守护进程存活。
+    let headless = cfg.headless || !std::io::stdout().is_terminal();
+
+    if headless {
+        tracing::info!("以 headless(无界面)模式运行,仅反向代理");
+        // 无 TUI 消费事件流:起一个任务把通道抽干,避免有界通道占满。
+        tokio::spawn(async move {
+            let mut rx = rx;
+            while rx.recv().await.is_some() {}
+        });
+        // 前台驻留:代理服务退出或收到 Ctrl-C 才结束。
+        tokio::select! {
+            r = serve => {
+                if let Err(e) = r {
+                    tracing::error!(error = %e, "HTTP 服务退出");
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("收到 Ctrl-C,退出");
+            }
         }
-    });
-
-    // TUI 在独立 OS 线程里跑同步渲染循环;它返回即退出程序。
-    let listen = cfg.listen.clone();
-    let tui_handle = std::thread::spawn(move || tui::run(rx, listen, upstream, controls));
-
-    match tui_handle.join() {
-        Ok(Ok(())) => tracing::info!("TUI 正常退出"),
-        Ok(Err(e)) => tracing::error!(error = %e, "TUI 异常"),
-        Err(_) => tracing::error!("TUI 线程 panic"),
+    } else {
+        // 交互模式:代理在后台任务跑,TUI 在独立 OS 线程渲染;TUI 返回即退出程序。
+        tokio::spawn(async move {
+            if let Err(e) = serve.await {
+                tracing::error!(error = %e, "HTTP 服务退出");
+            }
+        });
+        let listen = cfg.listen.clone();
+        let tui_handle = std::thread::spawn(move || tui::run(rx, listen, upstream, controls));
+        match tui_handle.join() {
+            Ok(Ok(())) => tracing::info!("TUI 正常退出"),
+            Ok(Err(e)) => tracing::error!(error = %e, "TUI 异常"),
+            Err(_) => tracing::error!("TUI 线程 panic"),
+        }
     }
 
     Ok(())
