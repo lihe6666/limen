@@ -75,6 +75,52 @@ fail_mode = "fail_open"                 # 超时/故障时:fail_open 放行 | fa
 
 模块:`proxy`(代理+流水线)、`engine/rules`(规则)、`engine/ngram`(n-gram 分类器)、`engine/llm`(研判编排+provider)、`engine/verdict`(裁决类型)、`eval`(离线评测)、`state`(黑名单/模式)、`tui`(仪表盘)、`event`、`config`。
 
+## 部署在 nginx / caddy 后面
+
+Limen 不终结 TLS,标准部署是前置 nginx 或 caddy 终结 HTTPS 后再反代到 Limen。**必须配置 `trusted_proxies` 指向前置代理的 IP**,否则 Limen 会把所有请求的客户端 IP 都算成前置代理那一个地址,IP 黑名单攒够封禁阈值后会自封代理,导致整站不可访问。
+
+**Limen 端 `config.toml` 关键片段:**
+
+```toml
+headless = true                     # 无界面守护进程模式(服务器/Docker)
+listen = "127.0.0.1:8080"           # 仅侦听本地回环,由前置代理转发
+upstream = "http://192.168.1.100:8000"  # 真实源站地址
+trusted_proxies = ["127.0.0.1"]     # 前置 nginx/caddy 的 IP;只有来自此列表的请求才会信任 X-Forwarded-For
+real_ip_header = "X-Forwarded-For"  # 默认值,可不写;从该请求头取真实客户端 IP
+```
+
+**nginx 示例:**
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name example.com;
+
+    ssl_certificate     /etc/ssl/certs/example.com.pem;
+    ssl_certificate_key /etc/ssl/private/example.com.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**caddy 示例:**
+
+```caddy
+example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Caddy 默认自动添加 `X-Forwarded-For` 和 `X-Forwarded-Proto`,无需手动设置转发头。
+
+> **安全提示:**`trusted_proxies` 只填你自己前置代理的 IP(例如 `127.0.0.1` 或内网 IP),不要填入任何不可信来源。如果前置代理在公网且 IP 不固定,考虑用内网回环或私有网段进行转发。
+
 ## 测试与离线评测
 
 ```sh

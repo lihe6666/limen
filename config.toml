@@ -1,4 +1,7 @@
 # Limen 配置示例
+# headless = true                     # 无界面守护进程模式(服务器/Docker);无 TTY 也会自动降级
+# trusted_proxies = ["127.0.0.1"]     # 前置 nginx/caddy 的 IP;配了才会信任 X-Forwarded-For 取真实客户端 IP
+# real_ip_header = "X-Forwarded-For"  # 取真实客户端 IP 的请求头,默认 X-Forwarded-For
 listen = "127.0.0.1:8080"
 upstream = "http://127.0.0.1:8000"
 log_file = "limen.log"
