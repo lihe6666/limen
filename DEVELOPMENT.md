@@ -137,10 +137,10 @@ audit_log(id, time, client_ip, method, path, action, score, threat, status, deta
 
 | # | 任务 | 说明 | 预估 |
 |---|---|---|---|
-| 1 | **Docker 镜像** | 多阶段构建: `cargo build --release` → distroless 静态二进制 | 半天 |
+| 1 | **Docker 镜像** | 多阶段构建: `cargo build --release` → debian:bookworm-slim | ✅ 已完成 |
 | 2 | **Graceful shutdown** | signal 等待 inflight 请求完成 | 1h |
-| 3 | **日志轮转** | `rolling::daily` 或 `logrotate` 配置 | 30min |
-| 4 | **Systemd service** | `[Unit]` + `[Service]` + `ExecStart` 模板 | 30min |
+| 3 | **日志轮转** | `rolling::daily` 按天切分 | ✅ 已完成 |
+| 4 | **Systemd service** | `[Unit]` + `[Service]` + `ExecStart` 模板 | ✅ 已完成 |
 
 ### 🔮 远期规划（P2 — 上线后迭代）
 
@@ -223,3 +223,46 @@ limen --help                 帮助
 ```
 
 > `trusted_proxies` 必须配置！否则 IP 黑名单会把前置代理自封。
+
+## 容器 / systemd 部署
+
+### Docker
+
+```sh
+# 构建镜像
+docker build -t limen .
+
+# 运行（挂载配置目录）
+docker run -d \
+  --name limen \
+  -p 8080:8080 \
+  -v /etc/limen:/etc/limen \
+  limen
+
+# 如需自定义 config.toml 或 ml/model.bin,放入宿主机 /etc/limen 目录再启动
+```
+
+镜像基于 `debian:bookworm-slim`（glibc），非静态链接。如需更小体积的全静态 musl 镜像，可将 builder/runtime 改为 `rust:alpine` + `alpine:latest` 并安装 `musl-dev sqlite-dev`，构建时设 `RUSTFLAGS='-C target-feature=-crt-static'`。
+
+### systemd
+
+```sh
+# 安装
+sudo cp deploy/limen.service /etc/systemd/system/
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin limen
+sudo mkdir -p /etc/limen
+sudo cp config.toml /etc/limen/
+# 如有 ngram 模型
+sudo cp ml/model.bin /etc/limen/
+sudo chown -R limen:limen /etc/limen
+
+# 启动
+sudo systemctl daemon-reload
+sudo systemctl enable --now limen
+
+# 查看状态/日志
+sudo systemctl status limen
+sudo journalctl -u limen -f
+```
+
+服务以 headless 模式运行（无 TTY 自动 fallback），配置中 `headless = true` 可显式声明。日志同时输出到 journald 和 `/etc/limen/` 下的按天轮转文件。安全加固项（NoNewPrivileges、ProtectSystem 等）已预设在 `deploy/limen.service` 中。

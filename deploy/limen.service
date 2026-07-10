@@ -1,0 +1,33 @@
+[Unit]
+Description=Limen Web Application Firewall (LLM-enhanced WAF)
+Documentation=https://github.com/anomalyco/limen
+After=network.target
+
+[Service]
+Type=simple
+User=limen
+# headless 模式由 config.toml 中 headless=true 控制;
+# 服务无 TTY 时会自动 fallback 到 headless,无需额外设置环境变量。
+WorkingDirectory=/etc/limen
+ExecStart=/usr/local/bin/limen /etc/limen/config.toml
+
+Restart=on-failure
+RestartSec=3
+
+Environment=RUST_LOG=info
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+# 允许 WAF 读写 /etc/limen（SQLite 数据库 + 日志文件）
+ReadWritePaths=/etc/limen
+ProtectHome=true
+PrivateTmp=true
+
+# 日志输出到 journald,同时 tracing 会按天写入 /etc/limen/*.log
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=limen
+
+[Install]
+WantedBy=multi-user.target

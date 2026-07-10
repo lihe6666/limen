@@ -1,0 +1,26 @@
+# 构建产物
+target/
+
+# 测试/评测数据
+testdata/
+
+# SQLite 数据库
+*.db
+*.db-wal
+*.db-shm
+
+# 规则蒸馏产物
+gaps.jsonl
+candidate_rules.txt
+
+# 版本控制
+.git/
+
+# 运行时日志
+limen.log
+
+# ML 训练中间产物
+ml/*.npz
+
+# Python 缓存
+__pycache__/

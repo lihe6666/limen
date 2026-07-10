@@ -266,7 +266,9 @@ fn init_file_logging(log_file: &str) -> tracing_appender::non_blocking::WorkerGu
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "limen.log".to_string());
 
-    let appender = tracing_appender::rolling::never(dir, file_name);
+    // rolling::daily 按天切分日志,文件名自动追加日期后缀(如 limen.log.2026-07-10),
+    // 避免日志文件无限增长。
+    let appender = tracing_appender::rolling::daily(dir, file_name);
     let (non_blocking, guard) = tracing_appender::non_blocking(appender);
     tracing_subscriber::fmt()
         .with_env_filter(
