@@ -115,6 +115,11 @@ impl LlmAdjudicator {
             analysis: String::new(),
         }
     }
+
+    /// 只查缓存的快速裁决:命中返回 Some(是否拦截),未命中返回 None。advisory 旁路模式同步快查用。
+    pub async fn cached_verdict(&self, summary: &RequestSummary) -> Option<bool> {
+        self.cache.get(&cache_key(summary)).await
+    }
 }
 
 /// 缓存键:请求关键特征拼接。相同攻击特征在 TTL 内只研判一次。

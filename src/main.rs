@@ -18,7 +18,7 @@ use config::Config;
 use engine::{LlmAdjudicator, NgramClassifier, RuleEngine};
 use proxy::ProxyState;
 use state::Controls;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 
 /// 同一 IP 累计拦截达到此值自动封禁。
 const AUTO_BAN_THRESHOLD: u32 = 5;
@@ -96,6 +96,8 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
+    let llm_sem = Arc::new(Semaphore::new(32));
+
     let state = Arc::new(ProxyState {
         client,
         upstream: upstream.clone(),
@@ -110,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
         gap_log: cfg.detection.gap_log.clone(),
         trusted_proxies,
         real_ip_header: cfg.real_ip_header.clone(),
+        llm_sem,
     });
     let app = proxy::router(state);
 

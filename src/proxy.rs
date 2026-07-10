@@ -38,6 +38,8 @@ pub struct ProxyState {
     pub trusted_proxies: Vec<std::net::IpAddr>,
     /// 取真实 IP 的头名,默认 "X-Forwarded-For"
     pub real_ip_header: String,
+    /// LLM 后台异步并发上限
+    pub llm_sem: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 pub type SharedState = Arc<ProxyState>;
@@ -194,47 +196,97 @@ async fn pipeline(
         }
         Verdict::Suspicious { score, reasons } => {
             if let Some(llm) = state.llm.clone() {
-                let decision = llm.adjudicate(&summary).await;
-                if decision.block {
-                    if let Some(ip) = ip_parsed {
-                        if state.controls.record_block(ip) {
-                            tracing::warn!(%client_ip, "同一 IP 多次拦截,已自动封禁");
+                match llm.cached_verdict(&summary).await {
+                    Some(true) => {
+                        // 已知恶意 → 立即拦(同步,无 LLM 延迟)
+                        if let Some(ip) = ip_parsed {
+                            if state.controls.record_block(ip) {
+                                tracing::warn!(%client_ip, "同一 IP 多次拦截,已自动封禁");
+                            }
                         }
+                        block_or_monitor(
+                            state, summary, parts, body_bytes, "llm-cached".into(), score,
+                            format!("llm 缓存判定拦截 | trigger: {}", reasons.join("; ")),
+                            "llm-cache",
+                        )
+                        .await
                     }
-                    tracing::warn!(
-                        %client_ip, path = %summary.path, score,
-                        source = %decision.source, reason = %decision.reason,
-                        "LLM 研判判定拦截"
-                    );
-                    tracing::info!(
-                        tier = "llm", analysis = %decision.analysis, reason = %decision.reason,
-                        path = %summary.path, "LLM 研判详情"
-                    );
-                    let detail = format!("{}: {} | trigger: {}",
-                        decision.source, decision.reason, reasons.join("; "));
-                    block_or_monitor(
-                        state, summary, parts, body_bytes, decision.threat, score,
-                        detail, "llm",
-                    )
-                    .await
-                } else {
-                    let resp = forward(state.clone(), parts, body_bytes).await?;
-                    tracing::info!(
-                        tier = "llm", analysis = %decision.analysis, reason = %decision.reason,
-                        path = %summary.path, "LLM 研判详情"
-                    );
-                    let detail = format!("{}: {} | trigger: {}",
-                        decision.source, decision.reason, reasons.join("; "));
-                    emit(&state, &summary, Action::Suspicious, score, None,
-                        Some(resp.status().as_u16()),
-                        detail, "llm");
-                    Ok(resp)
+                    Some(false) => {
+                        // 已知良性 → 放行
+                        let resp = forward(state.clone(), parts, body_bytes).await?;
+                        emit(
+                            &state, &summary, Action::Suspicious, score, None,
+                            Some(resp.status().as_u16()),
+                            format!("llm 缓存判定放行 | trigger: {}", reasons.join("; ")),
+                            "llm-cache",
+                        );
+                        Ok(resp)
+                    }
+                    None => {
+                        // 首见可疑 → 立即放行 + 后台异步研判
+                        let resp = forward(state.clone(), parts, body_bytes).await?;
+                        let status = resp.status().as_u16();
+                        emit(
+                            &state, &summary, Action::Suspicious, score, None,
+                            Some(status),
+                            format!(
+                                "advisory: 后台研判中 | trigger: {}",
+                                reasons.join("; ")
+                            ),
+                            "advisory",
+                        );
+                        // 后台任务:有界并发,try_acquire 拿不到 permit 就跳过(不排队、不阻塞热路径)
+                        match state.llm_sem.clone().try_acquire_owned() {
+                            Ok(permit) => {
+                                let st = state.clone();
+                                let sm = summary.clone();
+                                let ipp = ip_parsed;
+                                tokio::spawn(async move {
+                                    let _permit = permit;
+                                    let decision = llm.adjudicate(&sm).await;
+                                    if decision.block {
+                                        if let Some(ip) = ipp {
+                                            if st.controls.record_block(ip) {
+                                                tracing::warn!(
+                                                    %ip,
+                                                    "advisory: LLM 判恶意累计,已自动封禁"
+                                                );
+                                            }
+                                        }
+                                        emit(
+                                            &st, &sm, Action::Blocked, 0,
+                                            Some(decision.threat.clone()), None,
+                                            format!(
+                                                "{}: {} | advisory 后台研判",
+                                                decision.source, decision.reason
+                                            ),
+                                            "llm-async",
+                                        );
+                                        tracing::warn!(
+                                            path = %sm.path,
+                                            source = %decision.source,
+                                            analysis = %decision.analysis,
+                                            "advisory LLM 判定拦截(已缓存,拦后续同类)"
+                                        );
+                                    }
+                                });
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    "LLM 后台并发已满,跳过本次 advisory 研判"
+                                );
+                            }
+                        }
+                        Ok(resp)
+                    }
                 }
             } else {
                 let resp = forward(state.clone(), parts, body_bytes).await?;
-                emit(&state, &summary, Action::Suspicious, score, None,
+                emit(
+                    &state, &summary, Action::Suspicious, score, None,
                     Some(resp.status().as_u16()),
-                    format!("rules: {}", reasons.join("; ")), "rules");
+                    format!("rules: {}", reasons.join("; ")), "rules",
+                );
                 Ok(resp)
             }
         }
