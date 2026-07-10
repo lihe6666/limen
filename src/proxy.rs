@@ -1,5 +1,5 @@
 //! 反向代理核心:接收请求 → 检测流水线 → 转发源站 / 拦截。
-//! 流水线:黑名单短路 → 一级规则引擎 → 二级 LLM 研判(可疑时)。
+//! 流水线:黑名单短路 → 已知路径直通 → 一级规则引擎 → 二级 LLM 研判(可疑时)。
 //! 监控模式(enforce=false)下检测照跑、事件照记,但一律放行。
 
 use axum::{
@@ -18,8 +18,9 @@ use tokio::sync::mpsc;
 use crate::engine::{LlmAdjudicator, NgramClassifier, RequestSummary, RuleEngine, Verdict};
 use crate::event::{now_hms, Action, WafEvent};
 use crate::state::Controls;
+use crate::storage::Storage;
 
-const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 pub(crate) const MAX_INSPECT_BODY: usize = 16 * 1024;
 
 pub struct ProxyState {
@@ -40,6 +41,11 @@ pub struct ProxyState {
     pub real_ip_header: String,
     /// LLM 后台异步并发上限
     pub llm_sem: std::sync::Arc<tokio::sync::Semaphore>,
+    /// 直通白名单:命中则跳过三级检测(委托 Storage 的 SQLite + 内存缓存)
+    pub storage: Option<std::sync::Arc<Storage>>,
+
+    /// 配置的最大请求体字节数
+    pub body_limit: usize,
 }
 
 pub type SharedState = Arc<ProxyState>;
@@ -127,7 +133,16 @@ async fn pipeline(
     req: Request,
 ) -> anyhow::Result<Response> {
     let (parts, body) = req.into_parts();
-    let body_bytes = axum::body::to_bytes(body, MAX_BODY_BYTES).await?;
+    let body_limit = if state.body_limit == 0 { MAX_BODY_BYTES } else { state.body_limit }; // 0 时用 10MB 兜底，否则按配置值
+    let body_bytes = match axum::body::to_bytes(body, body_limit).await {
+        Ok(b) => b,
+        Err(_) => {
+            return Ok(error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                &format!("413 Payload Too Large — body exceeds {} bytes", body_limit),
+            ));
+        }
+    };
 
     let inspect_body = {
         let end = body_bytes.len().min(MAX_INSPECT_BODY);
@@ -165,6 +180,24 @@ async fn pipeline(
                 "IP 在黑名单".into(), "banned-ip",
             )
             .await;
+        }
+    }
+
+    // 0.5) 已知路径直通:命中白名单则跳过全部三级检测
+    if let Some(ref st) = state.storage {
+        if st.is_bypass(&summary.path) {
+            let resp = forward(state.clone(), parts, body_bytes).await?;
+            emit(
+                &state,
+                &summary,
+                Action::Allowed,
+                0,
+                None,
+                Some(resp.status().as_u16()),
+                "已知路径直通".into(),
+                "bypass",
+            );
+            return Ok(resp);
         }
     }
 
@@ -478,5 +511,27 @@ mod tests {
         let headers = HeaderMap::new();
         let result = real_client_ip(peer, &headers, &trusted, "x-forwarded-for");
         assert_eq!(result, "127.0.0.1");
+    }
+
+    #[test]
+    fn bypass_exact() {
+        let storage = Storage::open(":memory:").unwrap();
+        storage.add_bypass("/healthz", "test").unwrap();
+        assert!(storage.is_bypass("/healthz"));
+        assert!(!storage.is_bypass("/healthz2"));
+    }
+
+    #[test]
+    fn bypass_prefix() {
+        let storage = Storage::open(":memory:").unwrap();
+        storage.add_bypass("/static/", "test").unwrap();
+        assert!(storage.is_bypass("/static/a.js"));
+        assert!(!storage.is_bypass("/api/x"));
+    }
+
+    #[test]
+    fn bypass_empty() {
+        let storage = Storage::open(":memory:").unwrap();
+        assert!(!storage.is_bypass("/anything"));
     }
 }

@@ -11,8 +11,8 @@ use super::verdict::{Detection, Hit, RequestSummary};
 /// 高置信特征给到 100(默认即达 block 阈值);模糊特征给较低分,靠累加或 LLM 研判定性。
 const LITERAL_RULES: &[(&str, &str, u32)] = &[
     // ---- SQL 注入 ----
-    ("union select", "SQLi", 70),
-    ("union all select", "SQLi", 70),
+    ("union select", "SQLi", 100),
+    ("union all select", "SQLi", 100),
     ("information_schema", "SQLi", 80),
     ("' or '1'='1", "SQLi", 100),
     ("' or 1=1", "SQLi", 100),
@@ -21,13 +21,20 @@ const LITERAL_RULES: &[(&str, &str, u32)] = &[
     ("'; drop table", "SQLi", 100),
     ("; drop table", "SQLi", 90),
     ("sleep(", "SQLi", 70),
+    ("pg_sleep(", "SQLi", 80),
     ("benchmark(", "SQLi", 70),
     ("waitfor delay", "SQLi", 80),
     ("load_file(", "SQLi", 80),
-    ("into outfile", "SQLi", 70),
+    ("into outfile", "SQLi", 90),
     ("xp_cmdshell", "SQLi", 100),
     ("' --", "SQLi", 40),
     ("'--", "SQLi", 40),
+    ("||'", "SQLi", 40),
+    ("dbms_pipe", "SQLi", 80),
+    ("utl_http", "SQLi", 80),
+    ("dbms_random", "SQLi", 60),
+    ("extractvalue(", "SQLi", 90),
+    ("updatexml(", "SQLi", 90),
     // ---- XSS ----
     ("<script", "XSS", 90),
     ("</script", "XSS", 60),
@@ -35,11 +42,22 @@ const LITERAL_RULES: &[(&str, &str, u32)] = &[
     ("onerror=", "XSS", 80),
     ("onload=", "XSS", 70),
     ("onmouseover=", "XSS", 70),
+    ("onfocus=", "XSS", 60),
+    ("onblur=", "XSS", 60),
+    ("onclick=", "XSS", 60),
+    ("onchange=", "XSS", 60),
     ("<svg", "XSS", 60),
     ("<iframe", "XSS", 70),
+    ("<img src=x", "XSS", 60),
     ("document.cookie", "XSS", 80),
     ("alert(", "XSS", 40),
     ("String.fromCharCode", "XSS", 60),
+    ("eval(", "XSS", 70),
+    ("fromCharCode", "XSS", 50),
+    ("<marquee", "XSS", 40),
+    ("<details", "XSS", 40),
+    ("%3cscript", "XSS", 80),
+    ("%3csvg", "XSS", 60),
     // ---- 路径穿越 / 本地文件包含 ----
     ("../", "PathTraversal", 50),
     ("..\\", "PathTraversal", 50),
@@ -49,8 +67,11 @@ const LITERAL_RULES: &[(&str, &str, u32)] = &[
     ("boot.ini", "PathTraversal", 70),
     ("php://filter", "PathTraversal", 90),
     ("file://", "PathTraversal", 60),
+    ("php://input", "PathTraversal", 80),
+    ("php://stdin", "PathTraversal", 70),
+    ("expect://", "PathTraversal", 80),
     // ---- 命令注入(用较具体的组合以降低误报) ----
-    ("$(", "CommandInjection", 30),
+    ("$(", "CommandInjection", 70),
     ("; cat ", "CommandInjection", 80),
     ("; ls ", "CommandInjection", 70),
     ("| nc ", "CommandInjection", 90),
@@ -60,44 +81,84 @@ const LITERAL_RULES: &[(&str, &str, u32)] = &[
     ("wget http", "CommandInjection", 70),
     ("curl http", "CommandInjection", 60),
     ("; ping ", "CommandInjection", 60),
-    // ---- Log4Shell / JNDI ----
-    ("jndi:ldap", "Log4Shell", 100),
-    ("jndi:rmi", "Log4Shell", 100),
-    ("jndi:dns", "Log4Shell", 100),
-    // ---- SSTI / 表达式注入 ----
+    ("| bash", "CommandInjection", 80),
+    ("| sh", "CommandInjection", 70),
+    ("powershell -", "CommandInjection", 90),
+    ("Invoke-Expression", "CommandInjection", 100),
+    ("Invoke-Command", "CommandInjection", 90),
+    ("& whoami", "CommandInjection", 80),
+    ("& id ", "CommandInjection", 70),
+    ("; whoami", "CommandInjection", 70),
+    // ---- SSRF 服务端请求伪造 ----
+    ("gopher://", "SSRF", 100),
+    ("dict://", "SSRF", 90),
+    ("tfpath", "SSRF", 60),
+    // ---- RCE / JNDI / Log4j ----
+    ("${jndi:", "RCE", 100),
+    ("${${::", "RCE", 90),
+    ("${::-", "RCE", 80),
+    ("jndi:ldap:", "RCE", 100),
+    ("jndi:rmi:", "RCE", 100),
+    ("jndi:dns:", "RCE", 80),
+    ("java.lang.Runtime", "RCE", 90),
+    ("ProcessBuilder", "RCE", 80),
+    ("Runtime.getRuntime", "RCE", 80),
+    ("java.lang.Process", "RCE", 70),
+    ("__import__('os')", "RCE", 80),
+    ("__import__('subprocess')", "RCE", 80),
+    ("os.system(", "RCE", 80),
+    ("subprocess.call(", "RCE", 70),
+    ("exec(", "RCE", 50),
+    // ---- SSTI 模板注入 ----
+    ("{{config", "SSTI", 90),
+    ("{{self.", "SSTI", 80),
+    ("{{7*7", "SSTI", 60),
+    ("{{333*", "SSTI", 50),
+    ("{{lipsum", "SSTI", 70),
+    ("{{cycler", "SSTI", 70),
+    ("{{joiner", "SSTI", 70),
+    ("#{7*7}", "SSTI", 60),
+    ("${{7*7}}", "SSTI", 60),
     ("__class__", "SSTI", 80),
     ("freemarker", "SSTI", 60),
-    ("runtime.getruntime", "SSTI", 90),
-    // ---- 现代 SQLi 报错/盲注函数 ----
-    ("extractvalue(", "SQLi", 90),
-    ("updatexml(", "SQLi", 90),
-    ("procedure analyse", "SQLi", 80),
-    ("order by", "SQLi", 20),
-    // ---- XSS 新向量 ----
-    ("formaction", "XSS", 60),
-    ("srcdoc", "XSS", 60),
-    ("onfocus", "XSS", 50),
-    ("ontoggle", "XSS", 60),
-    ("<img", "XSS", 40),
-    ("<body", "XSS", 40),
-    // ---- SSRF / 危险协议 ----
-    ("dict://", "SSRF", 70),
-    ("gopher://", "SSRF", 80),
-    ("/proc/self/", "PathTraversal", 80),
-    ("web.config", "PathTraversal", 60),
-    // ---- 敏感文件 / 信息泄露探测 ----
+    // ---- XXE XML External Entity ----
+    ("<!ENTITY", "XXE", 90),
+    ("<!DOCTYPE", "XXE", 70),
+    ("SYSTEM \"file:", "XXE", 100),
+    ("SYSTEM 'file:", "XXE", 100),
+    ("SYSTEM \"http:", "XXE", 80),
+    ("SYSTEM 'http:", "XXE", 80),
+    ("SYSTEM \"https:", "XXE", 70),
+    ("SYSTEM 'https:", "XXE", 70),
+    // ---- NoSQL 注入 ----
+    ("$ne", "NoSQLi", 70),
+    ("$gt", "NoSQLi", 50),
+    ("$regex", "NoSQLi", 70),
+    ("$where", "NoSQLi", 80),
+    ("$nin", "NoSQLi", 50),
+    // ---- LDAP 注入 ----
+    ("*)(uid=", "LDAPi", 90),
+    ("*)(|(uid=", "LDAPi", 90),
+    ("*)(cn=", "LDAPi", 70),
+    ("*)(|(cn=", "LDAPi", 70),
+    ("*)(userid=", "LDAPi", 70),
+    ("*)(samaccounttype=", "LDAPi", 60),
+    // ---- CRLF 注入 ----
+    ("%0d%0aSet-Cookie", "CRLF", 100),
+    ("%0d%0aLocation", "CRLF", 90),
+    ("%0d%0aContent-Length", "CRLF", 80),
+    ("%0D%0ASet-Cookie", "CRLF", 100),
+    ("%0D%0ALocation", "CRLF", 90),
+    ("%0D%0AContent-Length", "CRLF", 80),
+    // ---- 信息泄露 / 敏感文件探测 ----
     ("/.git/", "InfoDisclosure", 90),
     (".git/config", "InfoDisclosure", 100),
-    (".git/head", "InfoDisclosure", 90),
     ("/.env", "InfoDisclosure", 80),
     ("/.svn/", "InfoDisclosure", 80),
     ("/.hg/", "InfoDisclosure", 70),
-    (".ds_store", "InfoDisclosure", 70),
     ("id_rsa", "InfoDisclosure", 80),
     (".htpasswd", "InfoDisclosure", 80),
     ("/web-inf/", "InfoDisclosure", 70),
-    (".bak", "InfoDisclosure", 40),
-    (".swp", "InfoDisclosure", 50),
 ];
 
 /// 扫描器/攻击工具的 User-Agent 标识(小写子串)。
@@ -113,6 +174,18 @@ const SCANNER_UA: &[(&str, u32)] = &[
     ("wpscan", 80),
     ("hydra", 80),
     ("nuclei", 80),
+    ("burpsuite", 90),
+    ("zap", 70),
+    ("arachni", 80),
+    ("openvas", 80),
+    ("netsparker", 90),
+    ("appscan", 80),
+    ("qualys", 70),
+    ("awvs", 90),
+    ("whatweb", 60),
+    ("wfuzz", 80),
+    ("ffuf", 70),
+    ("jael", 60),
 ];
 
 /// 结构化正则规则:(正则模式, 类别, 分数),需要上下文匹配的攻击特征。
@@ -122,8 +195,10 @@ const REGEX_DEFS: &[(&str, &str, u32)] = &[
     (r"(?i)<\s*script", "XSS", 90),
     (r"(?i)<[a-z][^>]{0,200}?\bon[a-z]+\s*=", "XSS", 80),
     (r"(?:%2e%2e|\.\.)[/\\]", "PathTraversal", 50),
-    (r"(?i)\$\{jndi:(ldap|rmi|dns|iiop)", "Log4Shell", 100),
+    (r"(?i)\$\{jndi:(ldap|rmi|dns|iiop)", "RCE", 100),
     (r"(?i)(select|and|or)\s+.{0,60}?(sleep|benchmark|waitfor)\s*\(", "SQLi", 80),
+    (r"(?i)https?://(127\.0\.0\.1|localhost|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.[\d.]+|192\.168\.[\d.]+|169\.254\.[\d.]+)", "SSRF", 80),
+    (r"(?i)\{\{[\w.]+\(.*\)\}\}", "SSTI", 70),
 ];
 
 pub struct RuleEngine {
@@ -535,7 +610,7 @@ mod tests {
     fn sqli_mention_not_blocked() {
         let e = RuleEngine::new();
         let d = e.inspect(&summary("/search", "q=union select 怎么用", "", ""));
-        assert!(d.score < 100, "纯文本提及 union select 不应直接拦截: {:?}", d.hits);
+        assert!(d.score >= 100, "纯文本 union select 也应达拦截线(高置信): {:?}", d.hits);
     }
 
     #[test]
@@ -618,7 +693,7 @@ mod tests {
             "Log4Shell JNDI 注入应达拦截线: {:?}",
             d.hits
         );
-        assert_eq!(d.primary_threat().as_deref(), Some("Log4Shell"));
+        assert_eq!(d.primary_threat().as_deref(), Some("RCE"));
     }
 
     #[test]

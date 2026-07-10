@@ -18,6 +18,10 @@ pub struct Config {
     #[serde(default = "default_log_file")]
     pub log_file: String,
 
+    /// SQLite 数据库文件路径,空=不启用持久化(纯内存模式)
+    #[serde(default)]
+    pub db_path: String,
+
     /// 无界面守护进程模式:只跑反向代理、不起 TUI。
     /// 服务器/容器等无 TTY 环境必须开启;未显式配置时,检测到 stdout 非终端会自动降级为 headless。
     #[serde(default)]
@@ -97,6 +101,18 @@ pub struct DetectionConfig {
     /// 缺口捕获 JSONL 文件路径,None=不启用。规则漏判但被更高级别(ngram/LLM)抓获的请求会写入此文件
     #[serde(default)]
     pub gap_log: Option<String>,
+
+    /// 直通白名单:命中则跳过三级检测。以 / 结尾=前缀匹配,否则精确匹配
+    #[serde(default)]
+    pub bypass_paths: Vec<String>,
+
+    /// 上游(源站)请求超时秒数,0=不超时
+    #[serde(default = "default_upstream_timeout")]
+    pub upstream_timeout_secs: u64,
+
+    /// 允许的最大请求体字节,超限返回 413。0=沿用硬编码默认(10MB)
+    #[serde(default)]
+    pub max_body_bytes: usize,
 }
 
 impl Default for LlmConfig {
@@ -122,6 +138,9 @@ impl Default for DetectionConfig {
             ngram_threshold: default_ngram_threshold(),
             disabled_categories: Vec::new(),
             gap_log: None,
+            bypass_paths: Vec::new(),
+            upstream_timeout_secs: default_upstream_timeout(),
+            max_body_bytes: 0,
         }
     }
 }
@@ -146,6 +165,7 @@ impl Default for Config {
             listen: default_listen(),
             upstream: default_upstream(),
             log_file: default_log_file(),
+            db_path: String::new(),
             headless: false,
             trusted_proxies: Vec::new(),
             real_ip_header: default_real_ip_header(),
@@ -187,6 +207,10 @@ fn default_suspicious_threshold() -> u32 {
 }
 fn default_ngram_threshold() -> f32 {
     0.9
+}
+
+fn default_upstream_timeout() -> u64 {
+    30
 }
 
 fn default_real_ip_header() -> String {

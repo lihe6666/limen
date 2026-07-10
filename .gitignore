@@ -19,3 +19,11 @@
 
 # learn 工具产出(待审候选,可再生)
 /candidate_rules.txt
+
+# SQLite 运行时数据库(含封禁/直通/审计数据,不入库)
+/limen.db
+/limen.db-wal
+/limen.db-shm
+*.db
+*.db-wal
+*.db-shm
