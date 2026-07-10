@@ -5,6 +5,7 @@ mod config;
 mod engine;
 mod eval;
 mod event;
+mod learn;
 mod proxy;
 mod state;
 mod tui;
@@ -26,6 +27,10 @@ async fn main() -> anyhow::Result<()> {
     // `limen eval [样本目录]`:离线评测规则引擎,跑完即退出
     if std::env::args().nth(1).as_deref() == Some("eval") {
         return eval::run(std::env::args().skip(2).collect()).await;
+    }
+    // `limen learn [gaps.jsonl]`:离线规则蒸馏,跑完即退出
+    if std::env::args().nth(1).as_deref() == Some("learn") {
+        return learn::run(std::env::args().skip(2).collect()).await;
     }
 
     let config_path =

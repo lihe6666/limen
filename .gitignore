@@ -16,3 +16,6 @@
 # ML 原型产物(模型权重 / Python 缓存)
 /ml/*.npz
 /ml/__pycache__
+
+# learn 工具产出(待审候选,可再生)
+/candidate_rules.txt

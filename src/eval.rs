@@ -258,7 +258,7 @@ async fn run_llm_eval(
 }
 
 /// 递归收集 *.black / *.white 文件。
-fn collect_samples(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+pub(crate) fn collect_samples(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
@@ -273,7 +273,7 @@ fn collect_samples(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
 /// 把原始 HTTP 请求解析成引擎入参。
 /// 在字节层面切分头/体,body 截断与 proxy 的 MAX_INSPECT_BODY 对齐,
 /// 保证评测结果代表线上行为。格式不像请求的返回 None。
-fn parse_sample(bytes: &[u8]) -> Option<RequestSummary> {
+pub(crate) fn parse_sample(bytes: &[u8]) -> Option<RequestSummary> {
     // 头/体以首个空行分隔;兼容 \r\n 与 \n
     let (head_bytes, body_bytes) = match find_blank_line(bytes) {
         Some((head_end, body_start)) => (&bytes[..head_end], &bytes[body_start..]),

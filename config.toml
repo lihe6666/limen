@@ -14,6 +14,6 @@ enabled = true
 provider = "openai_compat"                 # anthropic | openai_compat | gemini
 model = "deepseek-chat"                    # DeepSeek 官方 API 模型名
 base_url = "https://api.deepseek.com"      # DeepSeek OpenAI 兼容端点
-api_key_env = "OPENAI_API_KEY"             # 从该环境变量读 key
+api_key_env = "OPENAI_API_KEY"             # 填环境变量【名】,不是密钥本身!密钥用 export 设进该变量
 timeout_ms = 15000                         # 真实网络往返,放宽超时
 fail_mode = "fail_open"
