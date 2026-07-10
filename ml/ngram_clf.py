@@ -17,12 +17,19 @@
 而非真实 payload 信号。
 
 用法:
-  train  <样本目录> --model m.npz        # 首次训练(在训练集上)
-  update <样本目录> --model m.npz        # 叠加训练(partial_fit 到已存模型)
-  eval   <样本目录> --model m.npz        # 在测试集上评估
-  demo   <样本目录>                       # 一键演示:切分→训练A→叠加B→对比
+  train       <样本目录> --model m.npz    # 首次训练(在训练集上)
+  update      <样本目录> --model m.npz    # 叠加训练(partial_fit 到已存模型)
+  update-gaps <gaps.jsonl> --model m.npz  # 自学习:从 WAF 缺口样本叠加训练(见下)
+  eval        <样本目录> --model m.npz    # 在测试集上评估
+  export      --model m.npz               # 导出 model.bin + parity.json 供 Rust
+  demo        <样本目录>                   # 一键演示:切分→训练A→叠加B→对比
+
+自学习闭环(update-gaps):把线上"规则漏判、被 ngram/LLM 抓到"的缺口样本
+(gaps.jsonl)作为正样本叠加训练,同时**重新采样一批可信白样本作负样本重锚**——
+这是防反馈投毒的关键:只学新的攻击检测,但始终用静态可信白样本守住误报边界,
+不让模型被"看着正常"的流量带偏。
 """
-import sys, os, zlib, argparse
+import sys, os, zlib, json, argparse
 import numpy as np
 
 D_BITS = 18
@@ -299,11 +306,62 @@ def cmd_export(model_path):
     print(f"导出 {ppath}({len(golden)} 条黄金样本,Rust parity 测试用)")
 
 
+def cmd_update_gaps(gaps_path, model_path, whites_dir, n_neg):
+    """自学习增量:从 WAF 缺口样本(JSONL 正样本)+ 重锚白样本(负样本)叠加训练。
+
+    gaps.jsonl 每行含 method/path/query/body(规则漏判、被更高级别判恶意的攻击)。
+    这些作正样本;再从可信白样本目录随机采 n_neg 条作负样本重锚,守住误报边界。
+    """
+    if not os.path.exists(model_path):
+        print(f"错误: 模型 {model_path} 不存在,请先 train"); return
+
+    # 正样本:缺口 payload
+    pos = []
+    with open(gaps_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ft = feature_text_from_parts(r.get("method", ""), r.get("path", ""),
+                                         r.get("query", ""), r.get("body", ""))
+            pos.append((hash_features(ft), 1))
+    if not pos:
+        print(f"错误: {gaps_path} 无可用缺口样本"); return
+
+    # 负样本:白样本重锚(防投毒:始终用可信 benign 校准 FP 边界)
+    neg = []
+    if whites_dir and os.path.isdir(whites_dir):
+        white_files = []
+        for dp, _, fs in os.walk(whites_dir):
+            white_files += [os.path.join(dp, x) for x in fs if x.endswith(".white")]
+        rng = np.random.default_rng(SEED)
+        if white_files:
+            pick = rng.choice(len(white_files), size=min(n_neg, len(white_files)), replace=False)
+            for i in pick:
+                with open(white_files[i], "rb") as fh:
+                    neg.append((hash_features(extract_text(fh.read())), 0))
+
+    m = Model.load(model_path)
+    before = m.seen
+    batch = pos + neg
+    print(f"叠加训练: 缺口正样本 {len(pos)} + 白样本重锚 {len(neg)} = {len(batch)} 条")
+    m.partial_fit(batch, epochs=5)
+    m.save(model_path)
+    print(f"完成: seen {before} → {m.seen}, updates={m.updates} → {model_path}")
+    print("提示: 重新 `export` 生成 model.bin/parity.json,并跑 cargo test(parity)+ eval 验证。")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["train", "update", "eval", "demo", "export"])
+    ap.add_argument("cmd", choices=["train", "update", "update-gaps", "eval", "demo", "export"])
     ap.add_argument("root", nargs="?", default="")
     ap.add_argument("--model", default=os.path.join(os.path.dirname(__file__), "model.npz"))
+    ap.add_argument("--whites", default="testdata/blazehttp", help="update-gaps 的白样本重锚目录")
+    ap.add_argument("--neg", type=int, default=2000, help="update-gaps 重锚的白样本条数")
     a = ap.parse_args()
     if a.cmd == "demo":
         cmd_demo(a.root)
@@ -311,6 +369,8 @@ def main():
         cmd_train(a.root, a.model, update=False)
     elif a.cmd == "update":
         cmd_train(a.root, a.model, update=True)
+    elif a.cmd == "update-gaps":
+        cmd_update_gaps(a.root or "gaps.jsonl", a.model, a.whites, a.neg)
     elif a.cmd == "eval":
         cmd_eval(a.root, a.model)
     elif a.cmd == "export":
