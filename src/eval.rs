@@ -63,7 +63,7 @@ pub async fn run(args: Vec<String>) -> anyhow::Result<()> {
     anyhow::ensure!(!files.is_empty(), "{} 下没有 *.black / *.white 样本", dir);
     files.sort(); // 遍历顺序与文件系统无关,报告可复现
 
-    let engine = RuleEngine::new();
+    let engine = RuleEngine::new_filtered(&cfg.detection.disabled_categories);
     let mut stats = Stats::default();
     // (类别, 模式) → 命中过的白样本数,误报调参的直接依据
     let mut white_hit_rules: HashMap<(String, String), u32> = HashMap::new();

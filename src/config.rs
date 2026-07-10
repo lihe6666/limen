@@ -75,6 +75,10 @@ pub struct DetectionConfig {
     /// ngram 分类器得分阈值:规则判 Allow 但 score >= 此值 → 提升为 Suspicious
     #[serde(default = "default_ngram_threshold")]
     pub ngram_threshold: f32,
+
+    /// 禁用的规则类别,空 = 全启用
+    #[serde(default)]
+    pub disabled_categories: Vec<String>,
 }
 
 impl Default for LlmConfig {
@@ -98,6 +102,7 @@ impl Default for DetectionConfig {
             suspicious_threshold: default_suspicious_threshold(),
             ngram_model: None,
             ngram_threshold: default_ngram_threshold(),
+            disabled_categories: Vec::new(),
         }
     }
 }

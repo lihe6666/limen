@@ -85,6 +85,19 @@ const LITERAL_RULES: &[(&str, &str, u32)] = &[
     ("gopher://", "SSRF", 80),
     ("/proc/self/", "PathTraversal", 80),
     ("web.config", "PathTraversal", 60),
+    // ---- 敏感文件 / 信息泄露探测 ----
+    ("/.git/", "InfoDisclosure", 90),
+    (".git/config", "InfoDisclosure", 100),
+    (".git/head", "InfoDisclosure", 90),
+    ("/.env", "InfoDisclosure", 80),
+    ("/.svn/", "InfoDisclosure", 80),
+    ("/.hg/", "InfoDisclosure", 70),
+    (".ds_store", "InfoDisclosure", 70),
+    ("id_rsa", "InfoDisclosure", 80),
+    (".htpasswd", "InfoDisclosure", 80),
+    ("/web-inf/", "InfoDisclosure", 70),
+    (".bak", "InfoDisclosure", 40),
+    (".swp", "InfoDisclosure", 50),
 ];
 
 /// 扫描器/攻击工具的 User-Agent 标识(小写子串)。
@@ -102,44 +115,64 @@ const SCANNER_UA: &[(&str, u32)] = &[
     ("nuclei", 80),
 ];
 
+/// 结构化正则规则:(正则模式, 类别, 分数),需要上下文匹配的攻击特征。
+const REGEX_DEFS: &[(&str, &str, u32)] = &[
+    (r"(?i)\bunion\s+(all\s+)?select\s*(\(|null|\d|@@|\*|[a-z_]+\s*\(|.{0,120}?\bfrom\b)", "SQLi", 100),
+    (r"(?i)\bor\b\s+\d+\s*=\s*\d+", "SQLi", 90),
+    (r"(?i)<\s*script", "XSS", 90),
+    (r"(?i)<[a-z][^>]{0,200}?\bon[a-z]+\s*=", "XSS", 80),
+    (r"(?:%2e%2e|\.\.)[/\\]", "PathTraversal", 50),
+    (r"(?i)\$\{jndi:(ldap|rmi|dns|iiop)", "Log4Shell", 100),
+    (r"(?i)(select|and|or)\s+.{0,60}?(sleep|benchmark|waitfor)\s*\(", "SQLi", 80),
+];
+
 pub struct RuleEngine {
     literals: AhoCorasick,
-    /// 与 literals 的 pattern id 一一对应的 (类别, 分数)
-    literal_meta: Vec<(&'static str, u32)>,
+    /// 过滤后的字面量规则:(模式串, 类别, 分数),与 literals 的 pattern id 一一对应
+    literal_rules: Vec<(&'static str, &'static str, u32)>,
     /// 结构化正则:(已编译正则, 类别, 分数)
     regexes: Vec<(Regex, &'static str, u32)>,
+    /// Scanner UA 检测开关(类别 "Scanner" 未禁用时为 true)
+    scanner_enabled: bool,
 }
 
 impl RuleEngine {
+    /// 构建规则引擎,所有类别启用。
     pub fn new() -> Self {
-        let patterns: Vec<&str> = LITERAL_RULES.iter().map(|(p, _, _)| *p).collect();
-        let literal_meta: Vec<(&'static str, u32)> =
-            LITERAL_RULES.iter().map(|(_, c, s)| (*c, *s)).collect();
+        Self::new_filtered(&[])
+    }
+
+    /// 构建规则引擎,跳过 disabled 中列出的类别。
+    /// 三处规则源均参与过滤:LITERAL_RULES(按类别)、REGEX_DEFS(按类别)、SCANNER_UA(类别视为 "Scanner")。
+    pub fn new_filtered(disabled: &[String]) -> Self {
+        let mut literal_rules: Vec<(&str, &str, u32)> = Vec::new();
+        let mut patterns: Vec<&str> = Vec::new();
+        for &(pat, cat, score) in LITERAL_RULES {
+            if disabled.iter().any(|d| d == cat) {
+                continue;
+            }
+            literal_rules.push((pat, cat, score));
+            patterns.push(pat);
+        }
 
         let literals = AhoCorasick::builder()
             .ascii_case_insensitive(true)
             .build(&patterns)
             .expect("字面量规则集构建失败");
 
-        // 需要上下文的结构化特征(大小写不敏感用 (?i))
-        let regex_defs: &[(&str, &str, u32)] = &[
-            (r"(?i)\bunion\s+(all\s+)?select\s*(\(|null|\d|@@|\*|[a-z_]+\s*\(|.{0,120}?\bfrom\b)", "SQLi", 100),
-            (r"(?i)\bor\b\s+\d+\s*=\s*\d+", "SQLi", 90),
-            (r"(?i)<\s*script", "XSS", 90),
-            (r"(?i)<[a-z][^>]{0,200}?\bon[a-z]+\s*=", "XSS", 80),
-            (r"(?:%2e%2e|\.\.)[/\\]", "PathTraversal", 50),
-            (r"(?i)\$\{jndi:(ldap|rmi|dns|iiop)", "Log4Shell", 100),
-            (r"(?i)(select|and|or)\s+.{0,60}?(sleep|benchmark|waitfor)\s*\(", "SQLi", 80),
-        ];
-        let regexes = regex_defs
+        let regexes: Vec<_> = REGEX_DEFS
             .iter()
-            .map(|(re, c, s)| (Regex::new(re).expect("正则编译失败"), *c, *s))
+            .filter(|(_, cat, _)| !disabled.iter().any(|d| d == *cat))
+            .map(|(re, cat, score)| (Regex::new(re).expect("正则编译失败"), *cat, *score))
             .collect();
+
+        let scanner_enabled = !disabled.iter().any(|d| d == "Scanner");
 
         Self {
             literals,
-            literal_meta,
+            literal_rules,
             regexes,
+            scanner_enabled,
         }
     }
 
@@ -164,9 +197,8 @@ impl RuleEngine {
             // 字面量匹配(重叠:相邻攻击特征可能共享字符,如 "../" 与 "/etc/passwd"
             // 共享斜杠;非重叠匹配会漏掉后者)
             for m in self.literals.find_overlapping_iter(hay) {
-                let (category, score) = self.literal_meta[m.pattern().as_usize()];
-                let pattern = LITERAL_RULES[m.pattern().as_usize()].0.to_string();
-                record(&mut det, &mut seen, category, pattern, score);
+                let &(pattern_str, category, score) = &self.literal_rules[m.pattern().as_usize()];
+                record(&mut det, &mut seen, category, pattern_str.to_string(), score);
             }
             // 结构化正则匹配
             for (re, category, score) in &self.regexes {
@@ -183,16 +215,18 @@ impl RuleEngine {
         }
 
         // 扫描器 UA
-        let ua = req.user_agent.to_ascii_lowercase();
-        for (needle, score) in SCANNER_UA {
-            if ua.contains(needle) {
-                record(
-                    &mut det,
-                    &mut seen,
-                    "Scanner",
-                    (*needle).to_string(),
-                    *score,
-                );
+        if self.scanner_enabled {
+            let ua = req.user_agent.to_ascii_lowercase();
+            for (needle, score) in SCANNER_UA {
+                if ua.contains(needle) {
+                    record(
+                        &mut det,
+                        &mut seen,
+                        "Scanner",
+                        (*needle).to_string(),
+                        *score,
+                    );
+                }
             }
         }
 
@@ -624,5 +658,34 @@ mod tests {
             d.hits
         );
         assert_eq!(d.primary_threat().as_deref(), Some("XSS"));
+    }
+
+    #[test]
+    fn git_disclosure_detected() {
+        let e = RuleEngine::new();
+        let d = e.inspect(&summary("/.git/config", "", "", ""));
+        assert!(
+            d.score >= 90,
+            ".git/config 应命中 InfoDisclosure 且分数 >= 90: {:?}",
+            d.hits
+        );
+        let info_hits: Vec<_> = d.hits.iter().filter(|h| h.category == "InfoDisclosure").collect();
+        assert!(
+            !info_hits.is_empty(),
+            "应命中 InfoDisclosure 类别: {:?}",
+            d.hits
+        );
+    }
+
+    #[test]
+    fn disabled_category_skipped() {
+        let e = RuleEngine::new_filtered(&["SQLi".to_string()]);
+        let d = e.inspect(&summary(
+            "/items",
+            "q=1 UNION SELECT password FROM users",
+            "",
+            "",
+        ));
+        assert_eq!(d.score, 0, "禁用 SQLi 后 union select 不应命中: {:?}", d.hits);
     }
 }

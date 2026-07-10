@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(ProxyState {
         client,
         upstream: upstream.clone(),
-        engine: RuleEngine::new(),
+        engine: RuleEngine::new_filtered(&cfg.detection.disabled_categories),
         block_threshold: cfg.detection.block_threshold,
         suspicious_threshold: cfg.detection.suspicious_threshold,
         llm,
