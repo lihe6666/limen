@@ -46,6 +46,9 @@ pub struct ProxyState {
 
     /// 配置的最大请求体字节数
     pub body_limit: usize,
+
+    /// per-IP 限流器(CC / HTTP flood 防御),None=不限流
+    pub rate_limiter: Option<Arc<crate::ratelimit::RateLimiter>>,
 }
 
 pub type SharedState = Arc<ProxyState>;
@@ -180,6 +183,26 @@ async fn pipeline(
                 "IP 在黑名单".into(), "banned-ip",
             )
             .await;
+        }
+    }
+
+    // 0.4) per-IP 限流:超限直接 429(防 CC/flood)
+    if let (Some(rl), Some(ip)) = (&state.rate_limiter, ip_parsed) {
+        if !rl.allow(ip).await {
+            emit(
+                &state,
+                &summary,
+                Action::Blocked,
+                0,
+                Some("RateLimit".into()),
+                None,
+                "per-IP 限流触发".into(),
+                "ratelimit",
+            );
+            return Ok(error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "429 Too Many Requests — rate limit exceeded",
+            ));
         }
     }
 

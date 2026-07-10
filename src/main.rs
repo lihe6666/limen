@@ -7,6 +7,7 @@ mod eval;
 mod event;
 mod learn;
 mod proxy;
+mod ratelimit;
 mod state;
 mod storage;
 mod tui;
@@ -152,6 +153,15 @@ async fn main() -> anyhow::Result<()> {
 
     let llm_sem = Arc::new(Semaphore::new(32));
 
+    let rate_limiter = if cfg.detection.rate_limit_rps > 0 {
+        Some(Arc::new(ratelimit::RateLimiter::new(
+            cfg.detection.rate_limit_rps,
+            cfg.detection.rate_limit_burst,
+        )))
+    } else {
+        None
+    };
+
     let state = Arc::new(ProxyState {
         client,
         upstream: upstream.clone(),
@@ -169,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
         llm_sem,
         storage: storage.clone(),
         body_limit,
+        rate_limiter,
     });
     let app = proxy::router(state);
 

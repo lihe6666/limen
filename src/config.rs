@@ -113,6 +113,14 @@ pub struct DetectionConfig {
     /// 允许的最大请求体字节,超限返回 413。0=沿用硬编码默认(10MB)
     #[serde(default)]
     pub max_body_bytes: usize,
+
+    /// per-IP 每秒请求数上限,0=不限流
+    #[serde(default)]
+    pub rate_limit_rps: u32,
+
+    /// per-IP 突发容量,0=默认取 rps*2
+    #[serde(default)]
+    pub rate_limit_burst: u32,
 }
 
 impl Default for LlmConfig {
@@ -141,6 +149,8 @@ impl Default for DetectionConfig {
             bypass_paths: Vec::new(),
             upstream_timeout_secs: default_upstream_timeout(),
             max_body_bytes: 0,
+            rate_limit_rps: 0,
+            rate_limit_burst: 0,
         }
     }
 }
