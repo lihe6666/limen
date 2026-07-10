@@ -79,6 +79,10 @@ pub struct DetectionConfig {
     /// 禁用的规则类别,空 = 全启用
     #[serde(default)]
     pub disabled_categories: Vec<String>,
+
+    /// 缺口捕获 JSONL 文件路径,None=不启用。规则漏判但被更高级别(ngram/LLM)抓获的请求会写入此文件
+    #[serde(default)]
+    pub gap_log: Option<String>,
 }
 
 impl Default for LlmConfig {
@@ -103,6 +107,7 @@ impl Default for DetectionConfig {
             ngram_model: None,
             ngram_threshold: default_ngram_threshold(),
             disabled_categories: Vec::new(),
+            gap_log: None,
         }
     }
 }

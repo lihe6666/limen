@@ -89,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
         ngram_threshold: cfg.detection.ngram_threshold,
         controls: controls.clone(),
         tx,
+        gap_log: cfg.detection.gap_log.clone(),
     });
     let app = proxy::router(state);
 

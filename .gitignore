@@ -10,6 +10,9 @@
 # 本地实际配置(如含私有源站/端点,可改用 config.example.toml 提交模板)
 # config.toml
 
+# 缺口捕获训练产物
+/gaps.jsonl
+
 # ML 原型产物(模型权重 / Python 缓存)
 /ml/*.npz
 /ml/__pycache__

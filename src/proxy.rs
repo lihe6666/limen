@@ -9,6 +9,8 @@ use axum::{
     response::Response,
     Router,
 };
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -31,6 +33,7 @@ pub struct ProxyState {
     pub ngram_threshold: f32,
     pub controls: Arc<Controls>,
     pub tx: mpsc::Sender<WafEvent>,
+    pub gap_log: Option<String>,
 }
 
 pub type SharedState = Arc<ProxyState>;
@@ -302,6 +305,34 @@ fn emit(
         }
         Action::Allowed => {
             tracing::debug!(tier, client_ip = %summary.client_ip, method = %summary.method, path = %summary.path, score, threat = ?threat, detail = %detail, "WAF 放行");
+        }
+    }
+
+    // 缺口捕获:规则漏判但被 ngram/LLM 等更高层级抓获,写入训练信号 JSONL
+    if let Some(ref gap_path) = state.gap_log {
+        if tier != "rules" && action != Action::Allowed {
+            let body_snippet = summary.body.chars().take(512).collect::<String>();
+            let json_line = serde_json::json!({
+                "time": now_hms(),
+                "client_ip": summary.client_ip,
+                "method": summary.method,
+                "path": summary.path,
+                "query": summary.query,
+                "body": body_snippet,
+                "rule_score": score,
+                "tier": tier,
+                "action": action.label(),
+                "threat": threat,
+                "detail": detail,
+            });
+            match OpenOptions::new().create(true).append(true).open(gap_path) {
+                Ok(mut f) => {
+                    let _ = writeln!(f, "{}", json_line);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %gap_path, "缺口捕获写文件失败");
+                }
+            }
         }
     }
 }
