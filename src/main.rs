@@ -309,10 +309,7 @@ fn cmd_get_health() -> anyhow::Result<()> {
         }
     }
     print!("  规则类别:   ");
-    let all = [
-        "SQLi", "XSS", "PathTraversal", "CommandInjection", "SSRF", "RCE",
-        "SSTI", "XXE", "NoSQLi", "LDAPi", "CRLF", "InfoDisclosure", "Scanner",
-    ];
+    let all = RuleEngine::all_categories();
     let enabled: Vec<&str> = all
         .iter()
         .filter(|c| !cfg.detection.disabled_categories.contains(&c.to_string()))

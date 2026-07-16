@@ -251,6 +251,19 @@ impl RuleEngine {
         }
     }
 
+    /// 全部规则类别名(去重排序),供 CLI get health 等展示统计用,与 LITERAL_RULES/REGEX_DEFS/Scanner 保持同步。
+    pub fn all_categories() -> Vec<&'static str> {
+        let mut cats: Vec<&'static str> = LITERAL_RULES
+            .iter()
+            .map(|&(_, cat, _)| cat)
+            .chain(REGEX_DEFS.iter().map(|&(_, cat, _)| cat))
+            .collect();
+        cats.push("Scanner");
+        cats.sort_unstable();
+        cats.dedup();
+        cats
+    }
+
     /// 对请求做检测,返回聚合结果。
     pub fn inspect(&self, req: &RequestSummary) -> Detection {
         let mut det = Detection::default();
