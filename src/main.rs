@@ -8,6 +8,7 @@ mod event;
 mod learn;
 mod proxy;
 mod ratelimit;
+mod sink;
 mod state;
 mod storage;
 mod tui;
@@ -19,6 +20,7 @@ use anyhow::Context;
 use config::Config;
 use engine::{LlmAdjudicator, NgramClassifier, RuleEngine};
 use proxy::{ProxyState, MAX_BODY_BYTES};
+use sink::{AuditLogSink, EventSink, GapLogSink, TracingSink, TuiChannelSink};
 use state::Controls;
 use storage::Storage;
 use tokio::sync::{mpsc, Semaphore};
@@ -162,6 +164,19 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // 请求处理事件的下游订阅者:TUI 通道 + tracing 日志始终注册;
+    // 缺口捕获 / 审计落库按配置可选注册。
+    let mut sinks: Vec<Arc<dyn EventSink>> = vec![
+        Arc::new(TuiChannelSink::new(tx)),
+        Arc::new(TracingSink),
+    ];
+    if let Some(ref path) = cfg.detection.gap_log {
+        sinks.push(Arc::new(GapLogSink::new(path.clone())));
+    }
+    if let Some(ref s) = storage {
+        sinks.push(Arc::new(AuditLogSink::new(s.clone())));
+    }
+
     let state = Arc::new(ProxyState {
         client,
         upstream: upstream.clone(),
@@ -172,8 +187,7 @@ async fn main() -> anyhow::Result<()> {
         ngram,
         ngram_threshold: cfg.detection.ngram_threshold,
         controls: controls.clone(),
-        tx,
-        gap_log: cfg.detection.gap_log.clone(),
+        sinks,
         trusted_proxies,
         real_ip_header: cfg.real_ip_header.clone(),
         llm_sem,

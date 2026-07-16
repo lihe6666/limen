@@ -9,14 +9,12 @@ use axum::{
     response::Response,
     Router,
 };
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 use crate::engine::{LlmAdjudicator, NgramClassifier, RequestSummary, RuleEngine, Verdict};
 use crate::event::{now_hms, Action, WafEvent};
+use crate::sink::EventSink;
 use crate::state::Controls;
 use crate::storage::Storage;
 
@@ -33,8 +31,8 @@ pub struct ProxyState {
     pub ngram: Option<NgramClassifier>,
     pub ngram_threshold: f32,
     pub controls: Arc<Controls>,
-    pub tx: mpsc::Sender<WafEvent>,
-    pub gap_log: Option<String>,
+    /// 请求处理事件的下游订阅者(TUI 通道 / tracing / 缺口捕获 / 审计落库等)
+    pub sinks: Vec<Arc<dyn EventSink>>,
     /// 启动时从配置解析好的可信代理 IP 列表
     pub trusted_proxies: Vec<std::net::IpAddr>,
     /// 取真实 IP 的头名,默认 "X-Forwarded-For"
@@ -446,79 +444,13 @@ fn emit(
         path: summary.path.clone(),
         action,
         score,
-        threat: threat.clone(),
+        threat,
         status,
-        detail: detail.clone(),
+        detail,
         tier: tier.to_string(),
     };
-    let _ = state.tx.try_send(ev);
-
-    match action {
-        Action::Blocked => {
-            tracing::warn!(tier, client_ip = %summary.client_ip, method = %summary.method, path = %summary.path, score, threat = ?threat, detail = %detail, "WAF 拦截");
-        }
-        Action::Suspicious => {
-            tracing::info!(tier, client_ip = %summary.client_ip, method = %summary.method, path = %summary.path, score, threat = ?threat, detail = %detail, "WAF 送检/可疑");
-        }
-        Action::Allowed => {
-            tracing::debug!(tier, client_ip = %summary.client_ip, method = %summary.method, path = %summary.path, score, threat = ?threat, detail = %detail, "WAF 放行");
-        }
-    }
-
-    // 缺口捕获:规则漏判但被 ngram/LLM 等更高层级抓获,写入训练信号 JSONL
-    // (banned-ip/ratelimit 这两个 tier 跟'规则漏判'无关,排除,避免污染训练数据)
-    if let Some(ref gap_path) = state.gap_log {
-        if tier != "rules" && tier != "banned-ip" && tier != "ratelimit" && action != Action::Allowed {
-            let body_snippet = summary.body.chars().take(512).collect::<String>();
-            let json_line = serde_json::json!({
-                "time": now_hms(),
-                "client_ip": summary.client_ip,
-                "method": summary.method,
-                "path": summary.path,
-                "query": summary.query,
-                "body": body_snippet,
-                "rule_score": score,
-                "tier": tier,
-                "action": action.label(),
-                "threat": threat,
-                "detail": detail,
-            });
-            match OpenOptions::new().create(true).append(true).open(gap_path) {
-                Ok(mut f) => {
-                    let _ = writeln!(f, "{}", json_line);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, path = %gap_path, "缺口捕获写文件失败");
-                }
-            }
-        }
-    }
-
-    if let Some(storage) = state.storage.clone() {
-        let audit_time = now_hms();
-        let audit_client_ip = summary.client_ip.clone();
-        let audit_method = summary.method.clone();
-        let audit_path = summary.path.clone();
-        let audit_action = action.label();
-        let audit_threat = threat.clone();
-        let audit_detail = detail.clone();
-        let audit_tier = tier.to_string();
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = storage.append_audit_log(
-                &audit_time,
-                &audit_client_ip,
-                &audit_method,
-                &audit_path,
-                audit_action,
-                score,
-                audit_threat.as_deref(),
-                status,
-                &audit_detail,
-                &audit_tier,
-            ) {
-                tracing::warn!(error = %e, "审计日志写入失败");
-            }
-        });
+    for sink in &state.sinks {
+        sink.on_event(&ev, summary);
     }
 }
 
