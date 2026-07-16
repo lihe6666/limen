@@ -466,8 +466,9 @@ fn emit(
     }
 
     // 缺口捕获:规则漏判但被 ngram/LLM 等更高层级抓获,写入训练信号 JSONL
+    // (banned-ip/ratelimit 这两个 tier 跟'规则漏判'无关,排除,避免污染训练数据)
     if let Some(ref gap_path) = state.gap_log {
-        if tier != "rules" && action != Action::Allowed {
+        if tier != "rules" && tier != "banned-ip" && tier != "ratelimit" && action != Action::Allowed {
             let body_snippet = summary.body.chars().take(512).collect::<String>();
             let json_line = serde_json::json!({
                 "time": now_hms(),
@@ -491,6 +492,33 @@ fn emit(
                 }
             }
         }
+    }
+
+    if let Some(storage) = state.storage.clone() {
+        let audit_time = now_hms();
+        let audit_client_ip = summary.client_ip.clone();
+        let audit_method = summary.method.clone();
+        let audit_path = summary.path.clone();
+        let audit_action = action.label();
+        let audit_threat = threat.clone();
+        let audit_detail = detail.clone();
+        let audit_tier = tier.to_string();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = storage.append_audit_log(
+                &audit_time,
+                &audit_client_ip,
+                &audit_method,
+                &audit_path,
+                audit_action,
+                score,
+                audit_threat.as_deref(),
+                status,
+                &audit_detail,
+                &audit_tier,
+            ) {
+                tracing::warn!(error = %e, "审计日志写入失败");
+            }
+        });
     }
 }
 

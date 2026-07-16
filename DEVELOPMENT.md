@@ -132,6 +132,7 @@ audit_log(id, time, client_ip, method, path, action, score, threat, status, deta
 | 健康检查 | ✅ `limen get health` |
 | --help 文档 | ✅ 含全部子命令 |
 | README | ✅ 完整 |
+| audit_log 写入 | ✅ `emit()` 每条事件落审计表 |
 
 ### 🔜 待完成（P1 — 上线前建议）
 
@@ -150,7 +151,6 @@ audit_log(id, time, client_ip, method, path, action, score, threat, status, deta
 | 6 | **请求速率限制** | per-IP 令牌桶，防 CC 攻击 |
 | 7 | **热加载规则/配置** | SIGHUP 重读 rules.rs / config.toml，无需重启 |
 | 8 | **CI (GitHub Actions)** | 自动 build + test + BlazeHTTP 评测 + 镜像构建 |
-| 9 | **audit_log 写入** | `storage.append_audit_log` 已实现但未接入流水线 |
 | 10 | **WebSocket 检测** | 目前只检测 HTTP，WS 无防护 |
 | 11 | **性能基准** | 用 `limen eval` 跟踪每次规则变更的吞吐影响 |
 
