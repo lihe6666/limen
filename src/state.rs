@@ -2,7 +2,7 @@
 //! IP 黑名单由 `storage::Storage` 统一管理(内存缓存 + SQLite 持久化),
 //! 本模块只维护**自动封禁的计数器**和**拦截/监控模式开关**。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
@@ -12,11 +12,13 @@ use crate::storage::Storage;
 pub struct Controls {
     /// 每个 IP 的累计拦截次数(用于自动封禁)
     block_counts: RwLock<HashMap<IpAddr, u32>>,
+    /// 纯内存模式(无 Storage)下的封禁集合兜底;有 Storage 时以 Storage 为准,此字段不用
+    banned_fallback: RwLock<HashSet<IpAddr>>,
     /// true = 拦截生效;false = 仅监控(检测照跑,但一律放行)
     enforce: AtomicBool,
     /// 同一 IP 累计拦截达此值则自动封禁(0 表示不自动封禁)
     auto_ban_threshold: u32,
-    /// 持久化存储层(黑名单读/写/清空均委托给它)
+    /// 持久化存储层(黑名单读/写/清空均委托给它;None=纯内存模式)
     storage: Option<std::sync::Arc<Storage>>,
 }
 
@@ -24,17 +26,18 @@ impl Controls {
     pub fn new(auto_ban_threshold: u32, storage: Option<std::sync::Arc<Storage>>) -> Self {
         Self {
             block_counts: RwLock::new(HashMap::new()),
+            banned_fallback: RwLock::new(HashSet::new()),
             enforce: AtomicBool::new(true),
             auto_ban_threshold,
             storage,
         }
     }
 
-    /// 检查 IP 是否被封禁(委托 Storage,含内存缓存)。
+    /// 检查 IP 是否被封禁:有 Storage 则委托(含内存缓存);否则查内存兜底集合。
     pub fn is_banned(&self, ip: &IpAddr) -> bool {
         match &self.storage {
             Some(s) => s.is_banned(&ip.to_string()),
-            None => false,
+            None => self.banned_fallback.read().unwrap().contains(ip),
         }
     }
 
@@ -50,8 +53,13 @@ impl Controls {
             *c
         };
         if count >= self.auto_ban_threshold && !self.is_banned(&ip) {
-            if let Some(ref s) = self.storage {
-                let _ = s.add_blacklist(&ip.to_string(), "auto-ban");
+            match &self.storage {
+                Some(s) => {
+                    let _ = s.add_blacklist(&ip.to_string(), "auto-ban");
+                }
+                None => {
+                    self.banned_fallback.write().unwrap().insert(ip);
+                }
             }
             true
         } else {
@@ -64,14 +72,19 @@ impl Controls {
         self.block_counts.write().unwrap().clear();
         match &self.storage {
             Some(s) => s.clear_blacklist().unwrap_or(0),
-            None => 0,
+            None => {
+                let mut b = self.banned_fallback.write().unwrap();
+                let n = b.len();
+                b.clear();
+                n
+            }
         }
     }
 
     pub fn banned_count(&self) -> usize {
         match &self.storage {
             Some(s) => s.banned_count(),
-            None => 0,
+            None => self.banned_fallback.read().unwrap().len(),
         }
     }
 
