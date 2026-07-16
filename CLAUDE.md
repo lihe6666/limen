@@ -29,7 +29,7 @@ TUI 独占终端，运行时日志一律走 `tracing` 落文件（默认 `limen.
         ├─ Block      → 403(enforce)或 放行+标注(monitor 模式)
         ├─ Suspicious ─┐
         └─ Allow ──→ NgramClassifier(二级,可选) score≥阈值则提升为 Suspicious
-                       └─ Suspicious → LlmAdjudicator::adjudicate(三级) → 拦截/放行
+                       └─ Suspicious → LlmAdjudicator::adjudicate(三级,完全旁路 advisory:先放行转发,后台异步研判,只影响后续同类请求) → 命中缓存则拦截
                        └─ Allow      → 转发源站
 所有结果 → mpsc 事件流 → TUI 仪表盘(src/tui/)
 ```

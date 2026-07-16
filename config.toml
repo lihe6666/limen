@@ -20,7 +20,7 @@ disabled_categories = []     # 禁用的规则类别(如 ["Scanner","InfoDisclos
 
 [llm]
 enabled = true
-provider = "openai_compat"                 # anthropic | openai_compat | gemini
+provider = "openai_compat"                 # 内置仅此一个,兼容 OpenAI/DeepSeek/Ollama/vLLM/Groq 等 OpenAI 兼容端点;异形端点需实现 LlmProvider trait
 model = "deepseek-chat"                    # DeepSeek 官方 API 模型名
 base_url = "https://api.deepseek.com"      # DeepSeek OpenAI 兼容端点
 api_key_env = "OPENAI_API_KEY"             # 填环境变量【名】,不是密钥本身!密钥用 export 设进该变量
