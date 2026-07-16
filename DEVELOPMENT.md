@@ -172,7 +172,7 @@ headless=true ./target/release/limen
 # 运行测试
 cargo test
 
-# 离线评测（需 testdata/blazehttp）
+# 离线评测（需 benchmarks/blazehttp）
 cargo run --release -- eval
 cargo run --release -- eval --llm   # 含 LLM
 

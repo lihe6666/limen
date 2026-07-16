@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::eval::{collect_samples, parse_sample};
 
 const DEFAULT_GAPS: &str = "gaps.jsonl";
-const DEFAULT_WHITES: &str = "testdata/blazehttp";
+const DEFAULT_WHITES: &str = "benchmarks/blazehttp";
 const OUT_FILE: &str = "candidate_rules.txt";
 const MAX_PAYLOADS_TO_LLM: usize = 50;
 

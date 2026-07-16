@@ -4,8 +4,8 @@
 # 运行时日志
 *.log
 
-# blazehttp 测试样本(GPL-3.0,不随本仓库分发;从 https://github.com/chaitin/blazehttp 获取)
-/testdata/blazehttp
+# blazehttp 评测语料(GPL-3.0,不随本仓库分发;从 https://github.com/chaitin/blazehttp 获取)
+/benchmarks/blazehttp
 
 # 本地实际配置(如含私有源站/端点,可改用 config.example.toml 提交模板)
 # config.toml

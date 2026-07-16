@@ -420,13 +420,13 @@ fn print_help(bin: &str) {
     eprintln!("    使用 BlazeHTTP 样本集量化规则引擎(及可选 LLM)的检出率/误报率。");
     eprintln!("    选项:");
     eprintln!("      --llm            同时测试 LLM 二级研判(需 config.toml 中配好 API key)");
-    eprintln!("      <目录>            样本目录,默认 testdata/blazehttp");
+    eprintln!("      <目录>            样本目录,默认 benchmarks/blazehttp");
     eprintln!("    输出:target/eval/ 下的漏报(missed_black.txt)与误报(fp_white.txt)明细");
     eprintln!("");
     eprintln!("  learn");
     eprintln!("    读缺口捕获 JSONL → LLM 提议候选规则 → 白样本误报闸门校验 → 输出候选。");
     eprintln!("    选项:");
-    eprintln!("      --whites <目录>   白样本目录,默认 testdata/blazehttp");
+    eprintln!("      --whites <目录>   白样本目录,默认 benchmarks/blazehttp");
     eprintln!("      <文件>            gaps.jsonl 路径,默认 gaps.jsonl");
     eprintln!("    输出:candidate_rules.txt(零误报候选,需人工审核后手工采纳)");
     eprintln!("");

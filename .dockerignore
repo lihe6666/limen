@@ -1,8 +1,8 @@
 # 构建产物
 target/
 
-# 测试/评测数据
-testdata/
+# 评测语料
+benchmarks/
 
 # SQLite 数据库
 *.db

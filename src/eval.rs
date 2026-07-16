@@ -1,6 +1,6 @@
 //! 离线评测:用 BlazeHTTP 风格的原始 HTTP 请求样本(*.black 攻击 / *.white 正常)
 //! 跑一级规则引擎,输出检出率/误报率/准确率基线与误报驱动规则,供规则迭代对照。
-//! 入口:`limen eval [样本目录]`,默认 testdata/blazehttp。
+//! 入口:`limen eval [样本目录]`,默认 benchmarks/blazehttp。
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -14,7 +14,7 @@ use crate::engine::verdict::Verdict;
 use crate::engine::{LlmAdjudicator, NgramClassifier, RequestSummary, RuleEngine};
 use crate::proxy::MAX_INSPECT_BODY;
 
-const DEFAULT_SAMPLE_DIR: &str = "testdata/blazehttp";
+const DEFAULT_SAMPLE_DIR: &str = "benchmarks/blazehttp";
 const REPORT_DIR: &str = "target/eval";
 
 pub async fn run(args: Vec<String>) -> anyhow::Result<()> {

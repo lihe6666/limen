@@ -360,7 +360,7 @@ def main():
     ap.add_argument("cmd", choices=["train", "update", "update-gaps", "eval", "demo", "export"])
     ap.add_argument("root", nargs="?", default="")
     ap.add_argument("--model", default=os.path.join(os.path.dirname(__file__), "model.npz"))
-    ap.add_argument("--whites", default="testdata/blazehttp", help="update-gaps 的白样本重锚目录")
+    ap.add_argument("--whites", default="benchmarks/blazehttp", help="update-gaps 的白样本重锚目录")
     ap.add_argument("--neg", type=int, default=2000, help="update-gaps 重锚的白样本条数")
     a = ap.parse_args()
     if a.cmd == "demo":

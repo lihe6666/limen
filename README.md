@@ -194,4 +194,4 @@ limen learn [--whites <白样本目录>] [gaps.jsonl]
 # 读缺口捕获 JSONL → LLM 提议候选规则 → 白样本误报闸门 → 输出零误报候选
 ```
 
-`eval` 依赖 `testdata/blazehttp/` 样本集(GPL-3.0,不随仓库分发,见 CLAUDE.md)。n-gram 模型训练/叠加训练/导出见 `ml/ngram_clf.py`。
+`eval` 依赖 `benchmarks/blazehttp/` 样本集(GPL-3.0,不随仓库分发,见 CLAUDE.md)。n-gram 模型训练/叠加训练/导出见 `ml/ngram_clf.py`。
