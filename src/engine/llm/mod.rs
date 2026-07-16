@@ -39,6 +39,9 @@ impl LlmAdjudicator {
     /// 按配置构建。provider 未知或不支持时返回错误。
     pub fn from_config(cfg: &LlmConfig, client: reqwest::Client) -> anyhow::Result<Self> {
         let api_key = std::env::var(&cfg.api_key_env).unwrap_or_default();
+        if api_key.is_empty() {
+            tracing::warn!(env = %cfg.api_key_env, "未设置 LLM API key 环境变量,LLM 研判可能因鉴权失败而持续降级");
+        }
 
         let provider: Arc<dyn LlmProvider> = match cfg.provider.as_str() {
             "openai_compat" => Arc::new(openai_compat::OpenAiCompatProvider::new(
@@ -125,6 +128,5 @@ impl LlmAdjudicator {
 /// 缓存键:请求关键特征拼接。相同攻击特征在 TTL 内只研判一次。
 fn cache_key(s: &RequestSummary) -> String {
     let body: String = s.body.chars().take(512).collect();
-    let headers: String = s.headers.chars().take(512).collect();
-    format!("{}|{}|{}|{}|{}|{}", s.method, s.path, s.query, s.user_agent, headers, body)
+    format!("{}|{}|{}|{}|{}", s.method, s.path, s.query, s.user_agent, body)
 }
