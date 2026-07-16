@@ -92,7 +92,7 @@ pub async fn run(args: Vec<String>) -> anyhow::Result<()> {
         let elevated = if matches!(verdict, Verdict::Allow) {
             if let Some(ref ngram_cls) = ngram {
                 let score = ngram_cls.score_parts(
-                    &summary.method, &summary.path, &summary.query, &summary.body,
+                    &summary.method, &summary.path, &summary.query, &summary.body, &summary.headers,
                 );
                 score >= ngram_threshold
             } else {

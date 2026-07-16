@@ -38,8 +38,8 @@ impl NgramClassifier {
         Ok(Self { w, b, d, nmin, nmax })
     }
 
-    pub fn score_parts(&self, method: &str, path: &str, query: &str, body: &str) -> f32 {
-        let text = feature_text(method, path, query, body);
+    pub fn score_parts(&self, method: &str, path: &str, query: &str, body: &str, headers: &str) -> f32 {
+        let text = feature_text(method, path, query, body, headers);
         self.score_feature_text(&text)
     }
 
@@ -72,9 +72,25 @@ fn single_percent_decode(s: &str) -> String {
     out
 }
 
-pub fn feature_text(method: &str, path: &str, query: &str, body: &str) -> String {
+/// 去掉请求头字符串里的 Host 行,理由:BlazeHTTP 黑样本几乎全部打同一靶机 Host,
+/// 保留会让模型学到"Host=靶机 IP → 攻击"的数据集 artifact,而非真实 payload 信号。
+/// 必须与 ml/ngram_clf.py::_strip_host_header 逐位镜像。
+fn strip_host_header(headers: &str) -> String {
+    headers
+        .lines()
+        .filter(|line| {
+            let name = line.split_once(':').map(|(n, _)| n).unwrap_or(line);
+            !name.trim().eq_ignore_ascii_case("host")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn feature_text(method: &str, path: &str, query: &str, body: &str, headers: &str) -> String {
     let body_trunc: String = body.chars().take(4096).collect();
-    let raw = format!("{method} {path} {query} {body_trunc}");
+    let headers_filtered = strip_host_header(headers);
+    let headers_trunc: String = headers_filtered.chars().take(4096).collect();
+    let raw = format!("{method} {path} {query} {body_trunc} {headers_trunc}");
     let decoded = single_percent_decode(&raw);
     format!("{raw} {decoded}").to_lowercase()
 }
@@ -137,6 +153,8 @@ mod tests {
             path: String,
             query: String,
             body: String,
+            #[serde(default)]
+            headers: String,
             feature_text: String,
             score: f64,
         }
@@ -150,14 +168,14 @@ mod tests {
         };
 
         for (i, case) in cases.iter().enumerate() {
-            let ft = feature_text(&case.method, &case.path, &case.query, &case.body);
+            let ft = feature_text(&case.method, &case.path, &case.query, &case.body, &case.headers);
             assert_eq!(
                 ft, case.feature_text,
                 "parity 用例 {i}: feature_text 不一致\n  期望: {:?}\n  实际: {:?}",
                 case.feature_text, ft
             );
 
-            let score = classifier.score_parts(&case.method, &case.path, &case.query, &case.body);
+            let score = classifier.score_parts(&case.method, &case.path, &case.query, &case.body, &case.headers);
             let diff = (score as f64 - case.score).abs();
             assert!(
                 diff < 1e-4,

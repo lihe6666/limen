@@ -231,7 +231,7 @@ async fn pipeline(
     // 1.5) ngram 分类器二层提升:规则判 Allow 但 ngram 得分高 → 提升为 Suspicious
     if matches!(verdict, Verdict::Allow) {
         if let Some(ref ngram) = state.ngram {
-            let score = ngram.score_parts(&summary.method, &summary.path, &summary.query, &summary.body);
+            let score = ngram.score_parts(&summary.method, &summary.path, &summary.query, &summary.body, &summary.headers);
             if score >= state.ngram_threshold {
                 verdict = Verdict::Suspicious {
                     score: state.suspicious_threshold,

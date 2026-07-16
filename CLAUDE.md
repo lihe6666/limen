@@ -36,9 +36,9 @@ TUI 独占终端，运行时日志一律走 `tracing` 落文件（默认 `limen.
 三级漏斗:① 规则(微秒,高精度) → ② char n-gram 分类器(毫秒,高召回,补规则漏报) → ③ LLM(秒级,灰色研判)。
 
 - **分数契约**：`engine/rules.rs` 中每条规则带分数并累加，`engine/verdict.rs::to_verdict` 按阈值映射为裁决。默认 `block_threshold=100`（单条高置信规则即拦截）、`suspicious_threshold=40`（送 LLM）。阈值来自 `config.toml [detection]`。
-- **检测面（已知缺口）**：引擎只扫 path + query + body（截断 16KB，`proxy.rs::MAX_INSPECT_BODY`）+ User-Agent。**不扫其他请求头**（Referer/Cookie 里的 payload 会漏），这是评测暴露的主要漏报来源之一。
+- **检测面**：引擎扫 path + query + body（截断 16KB，`proxy.rs::MAX_INSPECT_BODY`）+ 全部请求头（含 Referer/Cookie，不含 User-Agent——UA 单独走扫描器指纹规则，见下）。
 - **LLM 层**（`engine/llm/`）：`mod.rs` 是编排（moka TTL 缓存 + tokio 超时 + fail_open/fail_close 降级），`provider.rs` 定义 `LlmProvider` trait（外部扩展点）。内置只有 `openai_compat.rs` 一个配置驱动的 OpenAI 兼容 provider——改 `base_url`/`model` 即可对接 OpenAI/DeepSeek/Ollama/vLLM/Groq。异形端点由外部实现 trait 并在 `from_config` 注册。注意结构化输出用 `json_object` 而非 `json_schema`（后者是 OpenAI 专属，DeepSeek 等会拒绝）；`provider.rs::parse_verdict` 是各端点的统一兜底解析层。
-- **二级 n-gram 分类器**（`engine/ngram.rs`）：可选。char n-gram（n=2..4）+ crc32 hashing + 逻辑回归，加载 `ml/model.bin`（Python `ml/ngram_clf.py` 训练+`export` 导出，支持 `update` 叠加训练）。**它只把规则判 Allow 的请求提升为 Suspicious 送 LLM，不直接拦截**。由 `config.toml [detection] ngram_model`/`ngram_threshold` 开启。⚠️ Python↔Rust 特征提取必须逐位一致（否则权重失效）——`ngram.rs` 的 parity 测试读 `ml/parity.json` 断言，改任一侧特征逻辑都要重新 `export` 并跑 parity。
+- **二级 n-gram 分类器**（`engine/ngram.rs`）：可选。char n-gram（n=2..4）+ crc32 hashing + 逻辑回归，加载 `ml/model.bin`（Python `ml/ngram_clf.py` 训练+`export` 导出，支持 `update` 叠加训练）。**它只把规则判 Allow 的请求提升为 Suspicious 送 LLM，不直接拦截**。由 `config.toml [detection] ngram_model`/`ngram_threshold` 开启。特征文本含 path/query/body/请求头，但**刻意排除 Host / 客户端 IP / User-Agent**（`ngram_clf.py::_strip_host_header` / `ngram.rs::strip_host_header`）——BlazeHTTP 黑样本几乎全打同一靶机 Host，纳入会让模型学到"目标 IP=攻击"的数据集 artifact 而非真实 payload 信号。⚠️ Python↔Rust 特征提取必须逐位一致（否则权重失效）——`ngram.rs` 的 parity 测试读 `ml/parity.json` 断言，改任一侧特征逻辑都要重新 `export` 并跑 parity。
 - **双模式**：monitor 模式（TUI 按 `m` 切换）下检测照跑、事件照记但一律放行，用于上线前调参。
 
 ## 规则评测（改规则必跑）

